@@ -25,3 +25,8 @@ dist-ssr/
 # OS
 .DS_Store
 Thumbs.db
+
+# Environment / secrets — never commit API keys
+.env
+.env.*
+!.env.example
