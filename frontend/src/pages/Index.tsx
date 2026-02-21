@@ -8,10 +8,10 @@ export default function Index() {
       {/* Header */}
       <div className="absolute top-8 left-0 right-0 z-10 text-center">
         <h1 className="text-3xl font-bold tracking-tight text-foreground md:text-4xl">
-          Humanitarian Crisis Predictor
+          Crisis Underfunding Likelihood
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Scroll to zoom · Drag to rotate · Hover for likelihood · Click for details
+          Scroll to zoom · Drag to rotate · Hover for underfunding likelihood · Click for details
         </p>
       </div>
 
@@ -38,7 +38,7 @@ export default function Index() {
         />
         <div className="flex w-64 justify-between text-[10px] text-muted-foreground font-mono uppercase tracking-widest">
           <span>5%</span>
-          <span>Crisis Likelihood (%)</span>
+          <span>Underfunding Likelihood (%)</span>
           <span>95%</span>
         </div>
       </div>

@@ -7,7 +7,7 @@ export interface ContributingFactor {
 export interface CrisisPoint {
   lat: number
   lng: number
-  intensity: number // 0–1 overall crisis likelihood
+  intensity: number // 0–1 overall underfunding likelihood
   country: string
   factors: ContributingFactor[]
 }

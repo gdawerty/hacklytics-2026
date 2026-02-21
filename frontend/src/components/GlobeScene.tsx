@@ -67,7 +67,7 @@ function CrisisPanel({ point, onClose }: { point: CrisisPoint; onClose: () => vo
           <span className={`text-4xl font-bold tabular-nums ${level.color}`}>{score}%</span>
           <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${level.bg}`}>{level.label}</span>
         </div>
-        <p className="text-white/35 text-xs tracking-wide">Crisis Likelihood Score</p>
+        <p className="text-white/35 text-xs tracking-wide">Underfunding Likelihood Score</p>
       </div>
 
       <div className="mx-5 my-4 h-px bg-white/8" />
@@ -133,13 +133,20 @@ function HeatPoint({
   return (
     <group position={position}>
       <mesh onPointerOver={onPointerOver} onPointerOut={onPointerOut} onClick={onClick}>
-        <sphereGeometry args={[hovered ? scale * 2.2 : scale, 12, 12]} />
+        <sphereGeometry args={[hovered ? scale * 1.6 : scale, 12, 12]} />
         <meshBasicMaterial color={color} />
       </mesh>
       <mesh>
-        <sphereGeometry args={[hovered ? scale * 5.5 : scale * 2.8, 12, 12]} />
+        <sphereGeometry args={[hovered ? scale * 2.8 : scale * 1.8, 12, 12]} />
         <meshBasicMaterial color={color} transparent opacity={hovered ? 0.45 : 0.18 + point.intensity * 0.18} />
       </mesh>
+
+      {hovered && (
+        <mesh>
+          <sphereGeometry args={[scale * 1.8, 12, 12]} />
+          <meshBasicMaterial color={0xffffff} wireframe opacity={0.8} transparent />
+        </mesh>
+      )}
     </group>
   );
 }
@@ -153,7 +160,7 @@ function HeatmapPoints({ onHover, onInteract }: {
       point,
       position: latLngToVector3(point.lat, point.lng, 2.03),
       color:    getHeatColor(point.intensity),
-      scale:    0.03 + point.intensity * 0.055,
+      scale:    0.02 + point.intensity * 0.04,
     }))
   , []);
 
@@ -170,12 +177,20 @@ function Globe({ onHover, onInteract }: {
   onHover:    (p: CrisisPoint | null) => void;
   onInteract: () => void;
 }) {
-  const texture = useLoader(THREE.TextureLoader, "/images/earth-night.jpg");
+  const texture = useLoader(THREE.TextureLoader, "/images/earth-texture.jpg");
+  
+  // Enhance texture quality
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
 
   return (
     <group>
-      <Sphere args={[2, 64, 64]}>
-        <meshBasicMaterial map={texture} />
+      <Sphere args={[2, 128, 128]}>
+        <meshPhongMaterial 
+          map={texture}
+          shininess={5}
+          emissive={0x111111}
+        />
       </Sphere>
       <HeatmapPoints onHover={onHover} onInteract={onInteract} />
     </group>
@@ -214,7 +229,17 @@ export default function GlobeScene() {
         style={{ background: "transparent" }}
         gl={{ antialias: true, alpha: true }}
       >
-        <ambientLight intensity={1} />
+        <ambientLight intensity={0.6} />
+        <directionalLight 
+          position={[5, 3, 5]} 
+          intensity={1.2}
+          castShadow
+        />
+        <directionalLight 
+          position={[-2, -2, -5]} 
+          intensity={0.3}
+          color={0x4a90ff}
+        />
         <Globe onHover={setHovered} onInteract={handleInteraction} />
         <Atmosphere />
         <OrbitControls
