@@ -10,7 +10,7 @@ export default function Index() {
       {/* ── Layer 0: Animated starfield ── */}
       <StarfieldCanvas />
 
-      {/* ── Layer 2: Globe ── */}
+      {/* ── Layer 1: Globe ── */}
       <div className="absolute inset-0" style={{ zIndex: 2 }}>
         <Suspense
           fallback={

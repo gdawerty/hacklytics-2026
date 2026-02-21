@@ -73,17 +73,9 @@ function bboxAltitude(bbox: BBox): number {
 const CYAN = "34,211,238"; // #22d3ee
 
 // ─── Country color helpers ─────────────────────────────────────────────────
-function heatHSL(intensity: number): string {
-  let h: number;
-  if (intensity < 0.33)      h = 210 - 90 * (intensity / 0.33);
-  else if (intensity < 0.66) h = 120 - 75 * ((intensity - 0.33) / 0.33);
-  else                       h =  45 - 45 * ((intensity - 0.66) / 0.34);
-  return `${h.toFixed(0)},80%,52%`;
-}
-
 function getCapColor(feat: object, isHovered: boolean, isSelected: boolean, hasSelection: boolean): string {
-  const name   = (feat as any).properties?.name ?? "";
-  const crisis = crisisMap.get(name);
+  const name = (feat as any).properties?.name ?? "";
+  void name; // unused until heat data is re-enabled
 
   if (hasSelection) {
     if (isSelected) return `rgba(${CYAN},0.14)`;
@@ -95,10 +87,10 @@ function getCapColor(feat: object, isHovered: boolean, isSelected: boolean, hasS
 }
 
 function getStrokeColor(feat: object, isHovered: boolean, isSelected: boolean, hasSelection: boolean): string {
+  void feat;
   if (isSelected)   return `rgba(${CYAN},0.95)`;
   if (hasSelection) return "rgba(0,0,0,0)";
   if (isHovered)    return `rgba(${CYAN},0.80)`;
-  const name = (feat as any).properties?.name ?? "";
   return "rgba(255,255,255,0.06)";
 }
 
@@ -231,7 +223,6 @@ export default function GlobeScene() {
 
   // Country click → zoom + dossier + load state outlines
   const handlePolygonClick = useCallback((feat: object) => {
-    // Ignore clicks on state overlay polygons
     if ((feat as any)._drillState) return;
 
     handleInteraction();
