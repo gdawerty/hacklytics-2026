@@ -1,234 +1,398 @@
-import { useRef, useMemo, useState, useCallback, useEffect } from "react";
-import { Canvas, useLoader, ThreeEvent } from "@react-three/fiber";
-import { OrbitControls, Sphere } from "@react-three/drei";
-import * as THREE from "three";
+import { useRef, useState, useEffect, useCallback, useMemo } from "react";
+import { AnimatePresence } from "framer-motion";
+import Globe, { GlobeMethods } from "react-globe.gl";
 import { crisisData, CrisisPoint } from "@/data/heatmapData";
+import { IntelligenceDossier } from "./IntelligenceDossier";
 
-const IDLE_MS = 40_000; // 40 s of no interaction → resume rotation
+const IDLE_MS = 40_000;
 
-// ─── Helpers ──────────────────────────────────────────────────────────────
+// ─── Name mapping: crisis data → GeoJSON names ────────────────────────────
+const NAME_MAP: Record<string, string> = {
+  "DR Congo":       "Democratic Republic of the Congo",
+  "United States":  "USA",
+  "United Kingdom": "England",
+};
 
-function latLngToVector3(lat: number, lng: number, radius: number): THREE.Vector3 {
-  const phi   = (90 - lat)  * (Math.PI / 180);
-  const theta = (lng + 180) * (Math.PI / 180);
-  return new THREE.Vector3(
-    -(radius * Math.sin(phi) * Math.cos(theta)),
-      radius * Math.cos(phi),
-      radius * Math.sin(phi) * Math.sin(theta)
-  );
+const crisisMap = new Map<string, CrisisPoint>();
+for (const d of crisisData) {
+  crisisMap.set(NAME_MAP[d.country] ?? d.country, d);
 }
 
-function getHeatColor(intensity: number): THREE.Color {
-  if (intensity < 0.33) {
-    const t = intensity / 0.33;
-    return new THREE.Color().setHSL((200 - 80 * t) / 360, 0.9, 0.55);
+// GeoJSON country name → ISO 2-letter code (for admin-1 state lookup)
+const COUNTRY_TO_ISO2: Record<string, string> = {
+  "India":                            "IN",
+  "Afghanistan":                      "AF",
+  "South Sudan":                      "SS",
+  "Syria":                            "SY",
+  "Democratic Republic of the Congo": "CD",
+  "Somalia":                          "SO",
+  "Ethiopia":                         "ET",
+  "Sudan":                            "SD",
+  "Haiti":                            "HT",
+  "Ukraine":                          "UA",
+  "Myanmar":                          "MM",
+  "Mali":                             "ML",
+  "Lebanon":                          "LB",
+  "USA":                              "US",
+  "England":                          "GB",
+  "Brazil":                           "BR",
+  "Yemen":                            "YE",
+};
+
+const REVERSE: Record<string, string> = {
+  "Democratic Republic of the Congo": "DR Congo",
+  "USA":     "United States",
+  "England": "United Kingdom",
+};
+
+// ─── Geo helpers ───────────────────────────────────────────────────────────
+interface BBox { minLat: number; maxLat: number; minLng: number; maxLng: number }
+
+function getFeatureBBox(feat: object): BBox {
+  const geom = (feat as any).geometry;
+  const lats: number[] = [];
+  const lngs: number[] = [];
+  function scan(coords: number[][]) {
+    for (const [lng, lat] of coords) { lats.push(lat); lngs.push(lng); }
   }
-  if (intensity < 0.66) {
-    const t = (intensity - 0.33) / 0.33;
-    return new THREE.Color().setHSL((120 - 75 * t) / 360, 0.95, 0.52);
+  if (geom.type === "Polygon")      scan(geom.coordinates[0]);
+  else if (geom.type === "MultiPolygon")
+    for (const poly of geom.coordinates) scan(poly[0]);
+  return {
+    minLat: Math.min(...lats), maxLat: Math.max(...lats),
+    minLng: Math.min(...lngs), maxLng: Math.max(...lngs),
+  };
+}
+
+function bboxAltitude(bbox: BBox): number {
+  const span = Math.max(bbox.maxLat - bbox.minLat, bbox.maxLng - bbox.minLng);
+  return Math.max(0.25, Math.min(1.6, span / 38));
+}
+
+// ─── Neon cyan palette ─────────────────────────────────────────────────────
+const CYAN = "34,211,238"; // #22d3ee
+
+// ─── Country color helpers ─────────────────────────────────────────────────
+function heatHSL(intensity: number): string {
+  let h: number;
+  if (intensity < 0.33)      h = 210 - 90 * (intensity / 0.33);
+  else if (intensity < 0.66) h = 120 - 75 * ((intensity - 0.33) / 0.33);
+  else                       h =  45 - 45 * ((intensity - 0.66) / 0.34);
+  return `${h.toFixed(0)},80%,52%`;
+}
+
+function getCapColor(feat: object, isHovered: boolean, isSelected: boolean, hasSelection: boolean): string {
+  const name   = (feat as any).properties?.name ?? "";
+  const crisis = crisisMap.get(name);
+
+  if (hasSelection) {
+    if (isSelected) return `rgba(${CYAN},0.14)`;
+    return "rgba(0,0,0,0)";
   }
-  const t = (intensity - 0.66) / 0.34;
-  return new THREE.Color().setHSL((45 - 45 * t) / 360, 1.0, 0.52);
+
+  if (isHovered) return `rgba(${CYAN},0.11)`;
+  if (!crisis)   return "rgba(255,255,255,0.03)";
+
+  // Crisis countries: very muted heat tint
+  const alpha = 0.09 + crisis.intensity * 0.13;
+  return `hsla(${heatHSL(crisis.intensity)},${alpha.toFixed(2)})`;
 }
 
-// ─── Crisis panel ─────────────────────────────────────────────────────────
-
-function crisisLevel(intensity: number) {
-  if (intensity > 0.74) return { label: "Critical", color: "text-red-400",     bg: "bg-red-500/20 text-red-300" };
-  if (intensity > 0.49) return { label: "High",     color: "text-orange-400",  bg: "bg-orange-500/20 text-orange-300" };
-  if (intensity > 0.24) return { label: "Moderate", color: "text-yellow-400",  bg: "bg-yellow-500/20 text-yellow-300" };
-  return                       { label: "Low",      color: "text-emerald-400", bg: "bg-emerald-500/20 text-emerald-300" };
+function getStrokeColor(feat: object, isHovered: boolean, isSelected: boolean, hasSelection: boolean): string {
+  if (isSelected)   return `rgba(${CYAN},0.95)`;
+  if (hasSelection) return "rgba(0,0,0,0)";
+  if (isHovered)    return `rgba(${CYAN},0.80)`;
+  const name = (feat as any).properties?.name ?? "";
+  return crisisMap.has(name) ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.06)";
 }
 
-function barColor(v: number) {
-  if (v > 74) return "#f87171";
-  if (v > 49) return "#fb923c";
-  if (v > 24) return "#facc15";
-  return "#34d399";
+function getAltitude(isHovered: boolean, isSelected: boolean): number {
+  if (isSelected) return 0.003;
+  if (isHovered)  return 0.016;
+  return 0.004;
 }
 
-function CrisisPanel({ point, onClose }: { point: CrisisPoint; onClose: () => void }) {
-  const score = Math.round(point.intensity * 100);
-  const level = crisisLevel(point.intensity);
-
-  return (
-    <div
-      className="absolute top-1/2 right-8 -translate-y-1/2 z-30
-                 w-72 rounded-2xl shadow-2xl overflow-hidden border border-white/10"
-      style={{ background: "rgba(10,12,20,0.92)", backdropFilter: "blur(20px)" }}
-    >
-      <div className="flex items-start justify-between px-5 pt-5 pb-3">
-        <h2 className="text-white font-bold text-xl leading-tight">{point.country}</h2>
-        <button onClick={onClose} className="text-white/30 hover:text-white/80 transition-colors text-lg leading-none mt-0.5">×</button>
-      </div>
-
-      <div className="px-5 pb-1">
-        <div className="flex items-center gap-2.5 mb-0.5">
-          <span className={`text-4xl font-bold tabular-nums ${level.color}`}>{score}%</span>
-          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${level.bg}`}>{level.label}</span>
-        </div>
-        <p className="text-white/35 text-xs tracking-wide">Crisis Likelihood Score</p>
-      </div>
-
-      <div className="mx-5 my-4 h-px bg-white/8" />
-
-      <div className="px-5 pb-5">
-        <p className="text-white/30 text-[10px] uppercase tracking-widest font-semibold mb-3">Contributing Factors</p>
-        <div className="space-y-3">
-          {point.factors.map((f) => (
-            <div key={f.name}>
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm leading-none">{f.icon}</span>
-                  <span className="text-white/65 text-[13px]">{f.name}</span>
-                </div>
-                <span className="text-white/45 text-xs tabular-nums font-mono">{f.value}%</span>
-              </div>
-              <div className="h-[3px] rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
-                <div
-                  className="h-full rounded-full"
-                  style={{ width: `${f.value}%`, background: barColor(f.value), boxShadow: `0 0 6px ${barColor(f.value)}88` }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
+// ─── State (admin-1) color helpers — hover only, no click ─────────────────
+function getStateCapColor(isHovered: boolean): string {
+  return isHovered ? `rgba(${CYAN},0.10)` : "rgba(255,255,255,0.02)";
 }
 
-// ─── Heat dot ─────────────────────────────────────────────────────────────
-
-function HeatPoint({
-  point, position, color, scale, onHover, onInteract,
-}: {
-  point:       CrisisPoint;
-  position:    THREE.Vector3;
-  color:       THREE.Color;
-  scale:       number;
-  onHover:     (p: CrisisPoint | null) => void;
-  onInteract:  () => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-
-  const onPointerOver = useCallback((e: ThreeEvent<PointerEvent>) => {
-    e.stopPropagation();
-    setHovered(true);
-    onHover(point);
-    document.body.style.cursor = "pointer";
-  }, [point, onHover]);
-
-  const onPointerOut = useCallback(() => {
-    setHovered(false);
-    onHover(null);
-    document.body.style.cursor = "auto";
-  }, [onHover]);
-
-  const onClick = useCallback((e: ThreeEvent<MouseEvent>) => {
-    e.stopPropagation();
-    onInteract(); // clicking a dot counts as interaction → stop rotation
-  }, [onInteract]);
-
-  return (
-    <group position={position}>
-      <mesh onPointerOver={onPointerOver} onPointerOut={onPointerOut} onClick={onClick}>
-        <sphereGeometry args={[hovered ? scale * 2.2 : scale, 12, 12]} />
-        <meshBasicMaterial color={color} />
-      </mesh>
-      <mesh>
-        <sphereGeometry args={[hovered ? scale * 5.5 : scale * 2.8, 12, 12]} />
-        <meshBasicMaterial color={color} transparent opacity={hovered ? 0.45 : 0.18 + point.intensity * 0.18} />
-      </mesh>
-    </group>
-  );
+function getStateStrokeColor(isHovered: boolean): string {
+  return isHovered ? `rgba(${CYAN},0.70)` : `rgba(${CYAN},0.20)`;
 }
 
-function HeatmapPoints({ onHover, onInteract }: {
-  onHover:    (p: CrisisPoint | null) => void;
-  onInteract: () => void;
-}) {
-  const pts = useMemo(() =>
-    crisisData.map((point) => ({
-      point,
-      position: latLngToVector3(point.lat, point.lng, 2.03),
-      color:    getHeatColor(point.intensity),
-      scale:    0.03 + point.intensity * 0.055,
-    }))
-  , []);
-
-  return (
-    <>
-      {pts.map((d, i) => (
-        <HeatPoint key={i} {...d} onHover={onHover} onInteract={onInteract} />
-      ))}
-    </>
-  );
-}
-
-function Globe({ onHover, onInteract }: {
-  onHover:    (p: CrisisPoint | null) => void;
-  onInteract: () => void;
-}) {
-  const texture = useLoader(THREE.TextureLoader, "/images/earth-night.jpg");
-
-  return (
-    <group>
-      <Sphere args={[2, 64, 64]}>
-        <meshBasicMaterial map={texture} />
-      </Sphere>
-      <HeatmapPoints onHover={onHover} onInteract={onInteract} />
-    </group>
-  );
-}
-
-function Atmosphere() {
-  return (
-    <Sphere args={[2.18, 48, 48]}>
-      <meshBasicMaterial color="hsl(210,80%,60%)" transparent opacity={0.04} side={THREE.BackSide} />
-    </Sphere>
-  );
+function getStateAltitude(isHovered: boolean): number {
+  return isHovered ? 0.020 : 0.008;
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────
-
 export default function GlobeScene() {
-  const [hovered,    setHovered]    = useState<CrisisPoint | null>(null);
-  const [autoRotate, setAutoRotate] = useState(true);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const globeRef     = useRef<GlobeMethods | undefined>(undefined);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  // Called on any user interaction — stops rotation and arms the 40s idle timer
-  const handleInteraction = useCallback(() => {
-    setAutoRotate(false);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setAutoRotate(true), IDLE_MS);
+  const [countries,       setCountries]       = useState<object[]>([]);
+  const [hoveredFeature,  setHoveredFeature]  = useState<object | null>(null);
+  const [selectedFeature, setSelectedFeature] = useState<object | null>(null);
+
+  // Admin-1 state boundaries — hover only
+  const [stateFeatures, setStateFeatures] = useState<object[]>([]);
+  const [hoveredState,  setHoveredState]  = useState<object | null>(null);
+  const [statesLoading, setStatesLoading] = useState(false);
+
+  const admin1DataRef    = useRef<object[] | null>(null);
+  const admin1LoadingRef = useRef(false);
+
+  const [dossier, setDossier] = useState<{
+    country: string;
+    crisis:  CrisisPoint | null;
+  } | null>(null);
+
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const [dims, setDims] = useState({ w: 900, h: 700 });
+
+  // Container resize
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      setDims({ w: Math.round(width), h: Math.round(height) });
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
   }, []);
 
-  // Cleanup timer on unmount
+  // Load countries GeoJSON
+  useEffect(() => {
+    fetch("/data/countries.geojson")
+      .then(r => r.json())
+      .then(data => setCountries(data.features));
+  }, []);
+
+  // Lazy-load admin-1 GeoJSON once; cache in memory
+  const loadAdmin1 = useCallback(async (): Promise<object[] | null> => {
+    if (admin1DataRef.current) return admin1DataRef.current;
+    if (admin1LoadingRef.current) return null;
+    admin1LoadingRef.current = true;
+    try {
+      const r = await fetch("/data/admin1.geojson");
+      if (!r.ok) return null;
+      const d = await r.json();
+      admin1DataRef.current = d.features ?? [];
+      return admin1DataRef.current;
+    } catch {
+      return null;
+    } finally {
+      admin1LoadingRef.current = false;
+    }
+  }, []);
+
+  const loadStatesForCountry = useCallback(async (geoName: string) => {
+    const iso2 = COUNTRY_TO_ISO2[geoName];
+    if (!iso2) { setStateFeatures([]); return; }
+    setStatesLoading(true);
+    const all = await loadAdmin1();
+    setStatesLoading(false);
+    if (!all) { setStateFeatures([]); return; }
+    setStateFeatures(all.filter((f: any) => f.properties?.iso_a2 === iso2));
+  }, [loadAdmin1]);
+
+  // Auto-rotate init
+  const onGlobeReady = useCallback(() => {
+    if (!globeRef.current) return;
+    const ctrl = globeRef.current.controls() as any;
+    ctrl.autoRotate      = true;
+    ctrl.autoRotateSpeed = 0.4;
+  }, []);
+
+  // Stop rotation + arm idle timer
+  const handleInteraction = useCallback(() => {
+    if (globeRef.current) (globeRef.current.controls() as any).autoRotate = false;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      if (globeRef.current) (globeRef.current.controls() as any).autoRotate = true;
+    }, IDLE_MS);
+  }, []);
+
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
 
-  return (
-    <div className="relative w-full h-full">
-      <Canvas
-        camera={{ position: [0, 0, 5.5], fov: 45 }}
-        style={{ background: "transparent" }}
-        gl={{ antialias: true, alpha: true }}
-      >
-        <ambientLight intensity={1} />
-        <Globe onHover={setHovered} onInteract={handleInteraction} />
-        <Atmosphere />
-        <OrbitControls
-          enableZoom
-          enablePan={false}
-          minDistance={3.5}
-          maxDistance={8}
-          autoRotate={autoRotate}
-          autoRotateSpeed={0.4}
-          onStart={handleInteraction}   // drag/click starts → stop rotation + reset timer
-        />
-      </Canvas>
+  // Back → world view
+  const handleBack = useCallback(() => {
+    setSelectedFeature(null);
+    setHoveredState(null);
+    setStateFeatures([]);
+    setDossier(null);
+    globeRef.current?.pointOfView({ altitude: 2.5 }, 1200);
+    handleInteraction();
+  }, [handleInteraction]);
 
-      {hovered && <CrisisPanel point={hovered} onClose={() => setHovered(null)} />}
+  // Escape key
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && selectedFeature) handleBack(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleBack, selectedFeature]);
+
+  // Country click → zoom + dossier + load state outlines
+  const handlePolygonClick = useCallback((feat: object) => {
+    // Ignore clicks on state overlay polygons
+    if ((feat as any)._drillState) return;
+
+    handleInteraction();
+    if (feat === selectedFeature) { handleBack(); return; }
+
+    const bbox = getFeatureBBox(feat);
+    const lat  = (bbox.minLat + bbox.maxLat) / 2;
+    const lng  = (bbox.minLng + bbox.maxLng) / 2;
+    const alt  = bboxAltitude(bbox);
+    globeRef.current?.pointOfView({ lat, lng, altitude: alt }, 1200);
+
+    setSelectedFeature(feat);
+    setHoveredState(null);
+
+    const geoName     = (feat as any).properties?.name ?? "";
+    const crisis      = crisisMap.get(geoName) ?? null;
+    const displayName = REVERSE[geoName] ?? geoName;
+    setDossier({ country: displayName, crisis });
+
+    loadStatesForCountry(geoName);
+  }, [handleInteraction, handleBack, selectedFeature, loadStatesForCountry]);
+
+  // Click blank globe → close
+  const handleGlobeClick = useCallback(() => {
+    if (selectedFeature) handleBack();
+  }, [selectedFeature, handleBack]);
+
+  // Unified hover: differentiates country vs state polygon
+  const handlePolygonHover = useCallback((feat: object | null) => {
+    if (!feat) {
+      setHoveredFeature(null);
+      setHoveredState(null);
+      return;
+    }
+    if ((feat as any)._drillState) {
+      setHoveredState(feat);
+      setHoveredFeature(null);
+    } else {
+      setHoveredFeature(feat);
+      setHoveredState(null);
+    }
+  }, []);
+
+  const hasSelection = selectedFeature !== null;
+
+  // Merge countries + tagged state outlines
+  const allPolygons = useMemo(() => {
+    if (!stateFeatures.length) return countries;
+    const tagged = stateFeatures.map(f => ({ ...(f as any), _drillState: true }));
+    return [...countries, ...tagged];
+  }, [countries, stateFeatures]);
+
+  // ─── Polygon accessor callbacks ───────────────────────────────────────────
+  const capColor = useCallback(
+    (feat: object) => {
+      if ((feat as any)._drillState)
+        return getStateCapColor(feat === hoveredState);
+      return getCapColor(feat, feat === hoveredFeature, feat === selectedFeature, hasSelection);
+    },
+    [hoveredFeature, selectedFeature, hasSelection, hoveredState]
+  );
+
+  const strokeColor = useCallback(
+    (feat: object) => {
+      if ((feat as any)._drillState)
+        return getStateStrokeColor(feat === hoveredState);
+      return getStrokeColor(feat, feat === hoveredFeature, feat === selectedFeature, hasSelection);
+    },
+    [hoveredFeature, selectedFeature, hasSelection, hoveredState]
+  );
+
+  const altitude = useCallback(
+    (feat: object) => {
+      if ((feat as any)._drillState)
+        return getStateAltitude(feat === hoveredState);
+      return getAltitude(feat === hoveredFeature, feat === selectedFeature);
+    },
+    [hoveredFeature, selectedFeature, hoveredState]
+  );
+
+  const hoveredStateName = hoveredState ? (hoveredState as any).properties?.name ?? "" : "";
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative w-full h-full"
+      onMouseDown={handleInteraction}
+    >
+      <Globe
+        ref={globeRef}
+        width={dims.w}
+        height={dims.h}
+        globeImageUrl="/images/earth-night.jpg"
+        backgroundColor="rgba(0,0,0,0)"
+        showAtmosphere
+        atmosphereColor="hsl(200,70%,30%)"
+        atmosphereAltitude={0.14}
+        showGraticules={false}
+        polygonsData={allPolygons}
+        polygonCapColor={capColor}
+        polygonSideColor={() => "rgba(0,0,0,0)"}
+        polygonStrokeColor={strokeColor}
+        polygonAltitude={altitude}
+        polygonsTransitionDuration={200}
+        polygonLabel={() => ""}
+        onPolygonHover={handlePolygonHover}
+        onPolygonClick={handlePolygonClick}
+        onGlobeClick={handleGlobeClick}
+        onGlobeReady={onGlobeReady}
+      />
+
+      {/* Back button */}
+      {hasSelection && (
+        <button
+          onClick={handleBack}
+          className="absolute top-6 left-6 z-50 flex items-center gap-2 px-4 py-2 rounded-xl
+                     text-white/80 hover:text-white text-sm font-medium transition-all
+                     border border-white/10 hover:border-white/30"
+          style={{ background: "rgba(8,10,20,0.85)", backdropFilter: "blur(16px)" }}
+        >
+          ← World view
+        </button>
+      )}
+
+      {/* State boundary loading indicator */}
+      {statesLoading && (
+        <div
+          className="absolute top-6 left-1/2 -translate-x-1/2 z-40 px-3 py-1.5 rounded-lg
+                     text-white/50 text-[11px] font-mono pointer-events-none"
+          style={{ background: "rgba(8,10,20,0.80)", backdropFilter: "blur(12px)" }}
+        >
+          Loading state boundaries…
+        </div>
+      )}
+
+      {/* State name tooltip on hover */}
+      {hoveredStateName && (
+        <div
+          className="absolute top-6 left-1/2 -translate-x-1/2 z-40 px-3 py-1.5 rounded-lg
+                     text-white/85 text-xs font-medium pointer-events-none"
+          style={{ background: "rgba(8,10,20,0.80)", backdropFilter: "blur(12px)" }}
+        >
+          {hoveredStateName}
+        </div>
+      )}
+
+      {/* Intelligence Dossier */}
+      <AnimatePresence>
+        {dossier && (
+          <IntelligenceDossier
+            key={dossier.country}
+            country={dossier.country}
+            crisis={dossier.crisis}
+            onClose={handleBack}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

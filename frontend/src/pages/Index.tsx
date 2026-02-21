@@ -3,33 +3,31 @@ import GlobeScene from "@/components/GlobeScene";
 
 export default function Index() {
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-background">
+    <div className="relative w-screen h-screen overflow-hidden bg-background">
 
-      {/* Header */}
-      <div className="absolute top-8 left-0 right-0 z-10 text-center">
+      {/* Globe fills the entire viewport */}
+      <Suspense
+        fallback={
+          <div className="flex h-full items-center justify-center text-muted-foreground">
+            Loading globe…
+          </div>
+        }
+      >
+        <GlobeScene />
+      </Suspense>
+
+      {/* Header — floats above the globe */}
+      <div className="absolute top-8 left-0 right-0 z-10 text-center pointer-events-none">
         <h1 className="text-3xl font-bold tracking-tight text-foreground md:text-4xl">
           Humanitarian Crisis Predictor
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          Scroll to zoom · Drag to rotate · Hover for likelihood · Click for details
+          Scroll to zoom · Drag to rotate · Hover a country · Click to open dossier
         </p>
       </div>
 
-      {/* Globe */}
-      <div className="h-[85vh] w-full max-w-5xl">
-        <Suspense
-          fallback={
-            <div className="flex h-full items-center justify-center text-muted-foreground">
-              Loading globe…
-            </div>
-          }
-        >
-          <GlobeScene />
-        </Suspense>
-      </div>
-
       {/* Legend bar */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5">
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5 pointer-events-none">
         <div
           className="h-2.5 w-64 rounded-full"
           style={{
