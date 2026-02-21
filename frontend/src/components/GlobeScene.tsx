@@ -91,11 +91,7 @@ function getCapColor(feat: object, isHovered: boolean, isSelected: boolean, hasS
   }
 
   if (isHovered) return `rgba(${CYAN},0.11)`;
-  if (!crisis)   return "rgba(255,255,255,0.03)";
-
-  // Crisis countries: very muted heat tint
-  const alpha = 0.09 + crisis.intensity * 0.13;
-  return `hsla(${heatHSL(crisis.intensity)},${alpha.toFixed(2)})`;
+  return "rgba(0,0,0,0)";
 }
 
 function getStrokeColor(feat: object, isHovered: boolean, isSelected: boolean, hasSelection: boolean): string {
@@ -103,7 +99,7 @@ function getStrokeColor(feat: object, isHovered: boolean, isSelected: boolean, h
   if (hasSelection) return "rgba(0,0,0,0)";
   if (isHovered)    return `rgba(${CYAN},0.80)`;
   const name = (feat as any).properties?.name ?? "";
-  return crisisMap.has(name) ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.06)";
+  return "rgba(255,255,255,0.06)";
 }
 
 function getAltitude(isHovered: boolean, isSelected: boolean): number {
@@ -318,11 +314,24 @@ export default function GlobeScene() {
 
   const hoveredStateName = hoveredState ? (hoveredState as any).properties?.name ?? "" : "";
 
+  // Country name tooltip (shown when not in selection mode)
+  const rawHoveredCountry     = hoveredFeature ? (hoveredFeature as any).properties?.name ?? "" : "";
+  const hoveredCountryDisplay = !hasSelection ? (REVERSE[rawHoveredCountry] ?? rawHoveredCountry) : "";
+
+  // Single tooltip label: state name takes priority
+  const tooltipLabel = hoveredStateName || hoveredCountryDisplay;
+
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    setMousePos({ x: e.clientX, y: e.clientY });
+  }, []);
+
   return (
     <div
       ref={containerRef}
       className="relative w-full h-full"
       onMouseDown={handleInteraction}
+      onMouseMove={handleMouseMove}
     >
       <Globe
         ref={globeRef}
@@ -331,8 +340,8 @@ export default function GlobeScene() {
         globeImageUrl="/images/earth-night.jpg"
         backgroundColor="rgba(0,0,0,0)"
         showAtmosphere
-        atmosphereColor="hsl(200,70%,30%)"
-        atmosphereAltitude={0.14}
+        atmosphereColor="hsl(235,75%,22%)"
+        atmosphereAltitude={0.22}
         showGraticules={false}
         polygonsData={allPolygons}
         polygonCapColor={capColor}
@@ -371,14 +380,28 @@ export default function GlobeScene() {
         </div>
       )}
 
-      {/* State name tooltip on hover */}
-      {hoveredStateName && (
+      {/* Cursor tooltip — country name or state name */}
+      {tooltipLabel && (
         <div
-          className="absolute top-6 left-1/2 -translate-x-1/2 z-40 px-3 py-1.5 rounded-lg
-                     text-white/85 text-xs font-medium pointer-events-none"
-          style={{ background: "rgba(8,10,20,0.80)", backdropFilter: "blur(12px)" }}
+          className="fixed z-40 px-3 py-1.5 rounded-lg pointer-events-none"
+          style={{
+            background:      "rgba(4,8,24,0.92)",
+            backdropFilter:  "blur(14px)",
+            left:            mousePos.x,
+            top:             mousePos.y - 44,
+            transform:       "translateX(-50%)",
+            border:          "1px solid rgba(34,211,238,0.20)",
+            fontFamily:      "monospace",
+            fontSize:        hoveredStateName ? "10px" : "12px",
+            fontWeight:      hoveredStateName ? 400 : 600,
+            letterSpacing:   "0.06em",
+            color:           hoveredStateName ? "rgba(255,255,255,0.65)" : "rgba(255,255,255,0.90)",
+            textTransform:   "uppercase",
+            boxShadow:       "0 0 18px rgba(34,211,238,0.06)",
+            whiteSpace:      "nowrap",
+          }}
         >
-          {hoveredStateName}
+          {tooltipLabel}
         </div>
       )}
 
