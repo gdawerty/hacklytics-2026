@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { Link } from "react-router-dom";
 import GlobeScene from "@/components/GlobeScene";
 import StarfieldCanvas from "@/components/StarfieldCanvas";
 
@@ -38,6 +39,22 @@ export default function Index() {
           Scroll to zoom · Drag to rotate · Hover a country · Click to open dossier
         </p>
       </div>
+
+      {/* About link */}
+      <Link
+        to="/about"
+        className="absolute top-8 right-8 z-10 px-4 py-2 rounded-lg border border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 transition-colors pointer-events-auto text-sm font-medium"
+      >
+        About
+      </Link>
+
+      {/* About link */}
+      <Link
+        to="/about"
+        className="absolute top-8 right-8 z-10 px-4 py-2 rounded-lg border border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 transition-colors pointer-events-auto text-sm font-medium"
+      >
+        About
+      </Link>
 
       {/* ── Legend ── */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none flex flex-col items-center gap-1.5"
