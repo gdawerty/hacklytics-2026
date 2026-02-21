@@ -1,10 +1,16 @@
-import { useRef, useState, useEffect, useCallback, useMemo } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import { AnimatePresence } from "framer-motion";
 import Globe, { GlobeMethods } from "react-globe.gl";
+import * as THREE from "three";
 import { crisisData, CrisisPoint } from "@/data/heatmapData";
 import { IntelligenceDossier } from "./IntelligenceDossier";
 
 const IDLE_MS = 40_000;
+const STAR_COUNT = 14_000;
+const STAR_NEAR = 700;
+const STAR_FAR = 3600;
+const STAR_PARALLAX = 0.1;
+const LAND_BASE = "109,135,90"; // realistic land tint
 
 // ─── Name mapping: crisis data → GeoJSON names ────────────────────────────
 const NAME_MAP: Record<string, string> = {
@@ -13,31 +19,21 @@ const NAME_MAP: Record<string, string> = {
   "United Kingdom": "England",
 };
 
-const crisisMap = new Map<string, CrisisPoint>();
-for (const d of crisisData) {
-  crisisMap.set(NAME_MAP[d.country] ?? d.country, d);
+const COUNTRY_LABEL_MAP: Record<string, string> = {
+  "West Bank": "Palestine",
+  "State of Palestine": "Palestine",
+  "PSE": "Palestine",
+};
+
+function normalizeCountryName(name: string): string {
+  return COUNTRY_LABEL_MAP[name] ?? name;
 }
 
-// GeoJSON country name → ISO 2-letter code (for admin-1 state lookup)
-const COUNTRY_TO_ISO2: Record<string, string> = {
-  "India":                            "IN",
-  "Afghanistan":                      "AF",
-  "South Sudan":                      "SS",
-  "Syria":                            "SY",
-  "Democratic Republic of the Congo": "CD",
-  "Somalia":                          "SO",
-  "Ethiopia":                         "ET",
-  "Sudan":                            "SD",
-  "Haiti":                            "HT",
-  "Ukraine":                          "UA",
-  "Myanmar":                          "MM",
-  "Mali":                             "ML",
-  "Lebanon":                          "LB",
-  "USA":                              "US",
-  "England":                          "GB",
-  "Brazil":                           "BR",
-  "Yemen":                            "YE",
-};
+const crisisMap = new Map<string, CrisisPoint>();
+for (const d of crisisData) {
+  const mapped = normalizeCountryName(NAME_MAP[d.country] ?? d.country);
+  crisisMap.set(mapped, d);
+}
 
 const REVERSE: Record<string, string> = {
   "Democratic Republic of the Congo": "DR Congo",
@@ -78,18 +74,19 @@ function getCapColor(feat: object, isHovered: boolean, isSelected: boolean, hasS
   void name; // unused until heat data is re-enabled
 
   if (hasSelection) {
-    if (isSelected) return `rgba(${CYAN},0.14)`;
-    return "rgba(0,0,0,0)";
+    if (isSelected) return `rgba(${LAND_BASE},0.80)`;
+    if (isHovered) return `rgba(${LAND_BASE},0.28)`;
+    return `rgba(${LAND_BASE},0.10)`;
   }
 
-  if (isHovered) return `rgba(${CYAN},0.11)`;
-  return "rgba(0,0,0,0)";
+  if (isHovered) return `rgba(${LAND_BASE},0.62)`;
+  return `rgba(${LAND_BASE},0.46)`;
 }
 
 function getStrokeColor(feat: object, isHovered: boolean, isSelected: boolean, hasSelection: boolean): string {
   void feat;
   if (isSelected)   return `rgba(${CYAN},0.95)`;
-  if (hasSelection) return "rgba(0,0,0,0)";
+  if (hasSelection) return "rgba(255,255,255,0.12)";
   if (isHovered)    return `rgba(${CYAN},0.80)`;
   return "rgba(255,255,255,0.06)";
 }
@@ -100,35 +97,20 @@ function getAltitude(isHovered: boolean, isSelected: boolean): number {
   return 0.004;
 }
 
-// ─── State (admin-1) color helpers — hover only, no click ─────────────────
-function getStateCapColor(isHovered: boolean): string {
-  return isHovered ? `rgba(${CYAN},0.10)` : "rgba(255,255,255,0.02)";
-}
-
-function getStateStrokeColor(isHovered: boolean): string {
-  return isHovered ? `rgba(${CYAN},0.70)` : `rgba(${CYAN},0.20)`;
-}
-
-function getStateAltitude(isHovered: boolean): number {
-  return isHovered ? 0.020 : 0.008;
-}
-
 // ─── Root ─────────────────────────────────────────────────────────────────
-export default function GlobeScene() {
+interface GlobeSceneProps {
+  onSelectionChange?: (selected: boolean) => void;
+}
+
+export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
   const globeRef     = useRef<GlobeMethods | undefined>(undefined);
   const containerRef = useRef<HTMLDivElement>(null);
+  const starfieldRef = useRef<THREE.Points | null>(null);
+  const sceneInitRef = useRef(false);
 
   const [countries,       setCountries]       = useState<object[]>([]);
   const [hoveredFeature,  setHoveredFeature]  = useState<object | null>(null);
   const [selectedFeature, setSelectedFeature] = useState<object | null>(null);
-
-  // Admin-1 state boundaries — hover only
-  const [stateFeatures, setStateFeatures] = useState<object[]>([]);
-  const [hoveredState,  setHoveredState]  = useState<object | null>(null);
-  const [statesLoading, setStatesLoading] = useState(false);
-
-  const admin1DataRef    = useRef<object[] | null>(null);
-  const admin1LoadingRef = useRef(false);
 
   const [dossier, setDossier] = useState<{
     country: string;
@@ -157,41 +139,113 @@ export default function GlobeScene() {
       .then(data => setCountries(data.features));
   }, []);
 
-  // Lazy-load admin-1 GeoJSON once; cache in memory
-  const loadAdmin1 = useCallback(async (): Promise<object[] | null> => {
-    if (admin1DataRef.current) return admin1DataRef.current;
-    if (admin1LoadingRef.current) return null;
-    admin1LoadingRef.current = true;
-    try {
-      const r = await fetch("/data/admin1.geojson");
-      if (!r.ok) return null;
-      const d = await r.json();
-      admin1DataRef.current = d.features ?? [];
-      return admin1DataRef.current;
-    } catch {
-      return null;
-    } finally {
-      admin1LoadingRef.current = false;
-    }
+  const syncStarfieldToGlobe = useCallback(() => {
+    if (!globeRef.current || !starfieldRef.current) return;
+    const pov = globeRef.current.pointOfView() as { lat?: number; lng?: number };
+    const lat = pov.lat ?? 0;
+    const lng = pov.lng ?? 0;
+
+    // Keep the star volume centered around the camera so space feels unbounded.
+    const cam = globeRef.current.camera() as THREE.Camera;
+    starfieldRef.current.position.copy(cam.position);
+
+    starfieldRef.current.rotation.x = THREE.MathUtils.degToRad(lat * STAR_PARALLAX);
+    starfieldRef.current.rotation.y = THREE.MathUtils.degToRad(lng * STAR_PARALLAX);
   }, []);
 
-  const loadStatesForCountry = useCallback(async (geoName: string) => {
-    const iso2 = COUNTRY_TO_ISO2[geoName];
-    if (!iso2) { setStateFeatures([]); return; }
-    setStatesLoading(true);
-    const all = await loadAdmin1();
-    setStatesLoading(false);
-    if (!all) { setStateFeatures([]); return; }
-    setStateFeatures(all.filter((f: any) => f.properties?.iso_a2 === iso2));
-  }, [loadAdmin1]);
+  const applyMatteMaterials = useCallback(() => {
+    if (!globeRef.current) return;
+    const scene = globeRef.current.scene() as THREE.Scene;
+    scene.traverse((obj: THREE.Object3D) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.material) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      mats.forEach((mat: THREE.Material) => {
+        const phong = mat as THREE.MeshPhongMaterial;
+        const standard = mat as THREE.MeshStandardMaterial;
+        if ("shininess" in phong) phong.shininess = 0;
+        if ("specular" in phong) phong.specular.setRGB(0, 0, 0);
+        if ("roughness" in standard) standard.roughness = 1;
+        if ("metalness" in standard) standard.metalness = 0;
+        mat.needsUpdate = true;
+      });
+    });
+  }, []);
+
+  const configureTacticalLighting = useCallback(() => {
+    if (!globeRef.current) return;
+    const scene = globeRef.current.scene() as THREE.Scene;
+    const lights: THREE.Light[] = [];
+    scene.traverse((obj: THREE.Object3D) => {
+      if ((obj as THREE.Light).isLight) lights.push(obj as THREE.Light);
+    });
+    lights.forEach(light => scene.remove(light));
+    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+    const directional = new THREE.DirectionalLight(0xffffff, 0.5);
+    directional.position.set(120, 80, 100);
+    scene.add(directional);
+  }, []);
+
+  const applyOceanTone = useCallback(() => {
+    if (!globeRef.current) return;
+    const material = (globeRef.current as any).globeMaterial?.() as THREE.MeshPhongMaterial | undefined;
+    if (!material) return;
+    // Force a blue ocean base independent of texture darkness.
+    material.map = null;
+    material.color = new THREE.Color("#1f6fd1");
+    material.emissive = new THREE.Color("#0b2d6b");
+    material.emissiveIntensity = 0.10;
+    material.shininess = 0;
+    material.specular = new THREE.Color(0x000000);
+    material.needsUpdate = true;
+  }, []);
+
+  const createStarfield = useCallback(() => {
+    if (!globeRef.current || starfieldRef.current) return;
+    const scene = globeRef.current.scene() as THREE.Scene;
+    const positions = new Float32Array(STAR_COUNT * 3);
+    for (let i = 0; i < STAR_COUNT; i += 1) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const radius = STAR_NEAR + Math.random() * (STAR_FAR - STAR_NEAR);
+      positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+      positions[i * 3 + 1] = radius * Math.cos(phi);
+      positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.PointsMaterial({
+      color: 0xe2e8f0,
+      size: 1.0,
+      sizeAttenuation: false,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false,
+    });
+    const points = new THREE.Points(geometry, material);
+    points.frustumCulled = false;
+    scene.add(points);
+    starfieldRef.current = points;
+    syncStarfieldToGlobe();
+  }, [syncStarfieldToGlobe]);
 
   // Auto-rotate init
   const onGlobeReady = useCallback(() => {
-    if (!globeRef.current) return;
+    if (!globeRef.current || sceneInitRef.current) return;
+    sceneInitRef.current = true;
     const ctrl = globeRef.current.controls() as any;
     ctrl.autoRotate      = true;
     ctrl.autoRotateSpeed = 0.4;
-  }, []);
+    ctrl.minDistance = 140;
+    ctrl.maxDistance = 430;
+    globeRef.current.pointOfView({ lat: 12, lng: 18, altitude: 2.2 }, 0);
+    setTimeout(() => {
+      applyOceanTone();
+      configureTacticalLighting();
+      applyMatteMaterials();
+      createStarfield();
+    }, 0);
+  }, [applyMatteMaterials, applyOceanTone, configureTacticalLighting, createStarfield]);
 
   // Stop rotation + arm idle timer
   const handleInteraction = useCallback(() => {
@@ -204,15 +258,37 @@ export default function GlobeScene() {
 
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
 
+  useEffect(() => {
+    let raf = 0;
+    const frame = () => {
+      syncStarfieldToGlobe();
+      raf = window.requestAnimationFrame(frame);
+    };
+    raf = window.requestAnimationFrame(frame);
+    return () => window.cancelAnimationFrame(raf);
+  }, [syncStarfieldToGlobe]);
+
+  useEffect(() => {
+    return () => {
+      if (!globeRef.current) return;
+      const scene = globeRef.current.scene() as THREE.Scene;
+      if (starfieldRef.current) {
+        scene.remove(starfieldRef.current);
+        starfieldRef.current.geometry.dispose();
+        (starfieldRef.current.material as THREE.Material).dispose();
+        starfieldRef.current = null;
+      }
+    };
+  }, []);
+
   // Back → world view
   const handleBack = useCallback(() => {
     setSelectedFeature(null);
-    setHoveredState(null);
-    setStateFeatures([]);
     setDossier(null);
+    onSelectionChange?.(false);
     globeRef.current?.pointOfView({ altitude: 2.5 }, 1200);
     handleInteraction();
-  }, [handleInteraction]);
+  }, [handleInteraction, onSelectionChange]);
 
   // Escape key
   useEffect(() => {
@@ -221,10 +297,8 @@ export default function GlobeScene() {
     return () => window.removeEventListener("keydown", onKey);
   }, [handleBack, selectedFeature]);
 
-  // Country click → zoom + dossier + load state outlines
+  // Country click → zoom + dossier
   const handlePolygonClick = useCallback((feat: object) => {
-    if ((feat as any)._drillState) return;
-
     handleInteraction();
     if (feat === selectedFeature) { handleBack(); return; }
 
@@ -235,82 +309,54 @@ export default function GlobeScene() {
     globeRef.current?.pointOfView({ lat, lng, altitude: alt }, 1200);
 
     setSelectedFeature(feat);
-    setHoveredState(null);
+    onSelectionChange?.(true);
 
-    const geoName     = (feat as any).properties?.name ?? "";
-    const crisis      = crisisMap.get(geoName) ?? null;
-    const displayName = REVERSE[geoName] ?? geoName;
+    const rawName     = (feat as any).properties?.name ?? "";
+    const geoName     = normalizeCountryName(rawName);
+    const crisis      = crisisMap.get(geoName) ?? crisisMap.get(rawName) ?? null;
+    const displayName = normalizeCountryName(REVERSE[geoName] ?? REVERSE[rawName] ?? geoName);
     setDossier({ country: displayName, crisis });
-
-    loadStatesForCountry(geoName);
-  }, [handleInteraction, handleBack, selectedFeature, loadStatesForCountry]);
+  }, [handleInteraction, handleBack, onSelectionChange, selectedFeature]);
 
   // Click blank globe → close
   const handleGlobeClick = useCallback(() => {
     if (selectedFeature) handleBack();
   }, [selectedFeature, handleBack]);
 
-  // Unified hover: differentiates country vs state polygon
   const handlePolygonHover = useCallback((feat: object | null) => {
-    if (!feat) {
-      setHoveredFeature(null);
-      setHoveredState(null);
-      return;
-    }
-    if ((feat as any)._drillState) {
-      setHoveredState(feat);
-      setHoveredFeature(null);
-    } else {
-      setHoveredFeature(feat);
-      setHoveredState(null);
-    }
+    setHoveredFeature(feat);
   }, []);
 
   const hasSelection = selectedFeature !== null;
 
-  // Merge countries + tagged state outlines
-  const allPolygons = useMemo(() => {
-    if (!stateFeatures.length) return countries;
-    const tagged = stateFeatures.map(f => ({ ...(f as any), _drillState: true }));
-    return [...countries, ...tagged];
-  }, [countries, stateFeatures]);
-
   // ─── Polygon accessor callbacks ───────────────────────────────────────────
   const capColor = useCallback(
     (feat: object) => {
-      if ((feat as any)._drillState)
-        return getStateCapColor(feat === hoveredState);
       return getCapColor(feat, feat === hoveredFeature, feat === selectedFeature, hasSelection);
     },
-    [hoveredFeature, selectedFeature, hasSelection, hoveredState]
+    [hoveredFeature, selectedFeature, hasSelection]
   );
 
   const strokeColor = useCallback(
     (feat: object) => {
-      if ((feat as any)._drillState)
-        return getStateStrokeColor(feat === hoveredState);
       return getStrokeColor(feat, feat === hoveredFeature, feat === selectedFeature, hasSelection);
     },
-    [hoveredFeature, selectedFeature, hasSelection, hoveredState]
+    [hoveredFeature, selectedFeature, hasSelection]
   );
 
   const altitude = useCallback(
     (feat: object) => {
-      if ((feat as any)._drillState)
-        return getStateAltitude(feat === hoveredState);
       return getAltitude(feat === hoveredFeature, feat === selectedFeature);
     },
-    [hoveredFeature, selectedFeature, hoveredState]
+    [hoveredFeature, selectedFeature]
   );
-
-  const hoveredStateName = hoveredState ? (hoveredState as any).properties?.name ?? "" : "";
 
   // Country name tooltip (shown when not in selection mode)
   const rawHoveredCountry     = hoveredFeature ? (hoveredFeature as any).properties?.name ?? "" : "";
-  const hoveredCountryDisplay = !hasSelection ? (REVERSE[rawHoveredCountry] ?? rawHoveredCountry) : "";
-
-  // Single tooltip label: state name takes priority
-  const tooltipLabel = hoveredStateName || hoveredCountryDisplay;
+  const hoveredCountryDisplay = !hasSelection
+    ? normalizeCountryName(REVERSE[rawHoveredCountry] ?? rawHoveredCountry)
+    : "";
+  const tooltipLabel = hoveredCountryDisplay;
 
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -328,13 +374,12 @@ export default function GlobeScene() {
         ref={globeRef}
         width={dims.w}
         height={dims.h}
-        globeImageUrl="/images/earth-night.jpg"
         backgroundColor="rgba(0,0,0,0)"
         showAtmosphere
         atmosphereColor="hsl(235,75%,22%)"
         atmosphereAltitude={0.22}
         showGraticules={false}
-        polygonsData={allPolygons}
+        polygonsData={countries}
         polygonCapColor={capColor}
         polygonSideColor={() => "rgba(0,0,0,0)"}
         polygonStrokeColor={strokeColor}
@@ -360,17 +405,6 @@ export default function GlobeScene() {
         </button>
       )}
 
-      {/* State boundary loading indicator */}
-      {statesLoading && (
-        <div
-          className="absolute top-6 left-1/2 -translate-x-1/2 z-40 px-3 py-1.5 rounded-lg
-                     text-white/50 text-[11px] font-mono pointer-events-none"
-          style={{ background: "rgba(8,10,20,0.80)", backdropFilter: "blur(12px)" }}
-        >
-          Loading state boundaries…
-        </div>
-      )}
-
       {/* Cursor tooltip — country name or state name */}
       {tooltipLabel && (
         <div
@@ -383,10 +417,10 @@ export default function GlobeScene() {
             transform:       "translateX(-50%)",
             border:          "1px solid rgba(34,211,238,0.20)",
             fontFamily:      "monospace",
-            fontSize:        hoveredStateName ? "10px" : "12px",
-            fontWeight:      hoveredStateName ? 400 : 600,
+            fontSize:        "12px",
+            fontWeight:      600,
             letterSpacing:   "0.06em",
-            color:           hoveredStateName ? "rgba(255,255,255,0.65)" : "rgba(255,255,255,0.90)",
+            color:           "rgba(255,255,255,0.90)",
             textTransform:   "uppercase",
             boxShadow:       "0 0 18px rgba(34,211,238,0.06)",
             whiteSpace:      "nowrap",

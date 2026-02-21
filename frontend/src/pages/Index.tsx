@@ -1,14 +1,12 @@
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { Link } from "react-router-dom";
 import GlobeScene from "@/components/GlobeScene";
-import StarfieldCanvas from "@/components/StarfieldCanvas";
 
 export default function Index() {
+  const [isZoomedIn, setIsZoomedIn] = useState(false);
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-black">
-
-      {/* ── Layer 0: Animated starfield ── */}
-      <StarfieldCanvas />
 
       {/* ── Layer 1: Globe ── */}
       <div className="absolute inset-0" style={{ zIndex: 2 }}>
@@ -20,33 +18,24 @@ export default function Index() {
             </div>
           }
         >
-          <GlobeScene />
+          <GlobeScene onSelectionChange={setIsZoomedIn} />
         </Suspense>
       </div>
 
       {/* ── Header ── */}
-      <div className="absolute top-8 left-0 right-0 pointer-events-none text-center" style={{ zIndex: 10 }}>
-        <p className="text-[8px] font-mono uppercase tracking-[0.35em] mb-2"
-          style={{ color: "rgba(34,211,238,0.45)" }}>
-          SIGINT · HUMANITARIAN INTELLIGENCE PLATFORM
-        </p>
+      <div
+        className="absolute top-8 left-0 right-0 pointer-events-none text-center transition-all duration-300"
+        style={{
+          zIndex: 10,
+          opacity: isZoomedIn ? 0 : 1,
+          transform: isZoomedIn ? "translateY(-12px)" : "translateY(0)",
+        }}
+      >
         <h1 className="text-3xl font-bold tracking-tight md:text-4xl"
           style={{ color: "rgba(255,255,255,0.92)" }}>
           Humanitarian Crisis Predictor
         </h1>
-        <p className="mt-2 text-[11px] font-mono tracking-widest uppercase"
-          style={{ color: "rgba(255,255,255,0.22)" }}>
-          Scroll to zoom · Drag to rotate · Hover a country · Click to open dossier
-        </p>
       </div>
-
-      {/* About link */}
-      <Link
-        to="/about"
-        className="absolute top-8 right-8 z-10 px-4 py-2 rounded-lg border border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 transition-colors pointer-events-auto text-sm font-medium"
-      >
-        About
-      </Link>
 
       {/* About link */}
       <Link
