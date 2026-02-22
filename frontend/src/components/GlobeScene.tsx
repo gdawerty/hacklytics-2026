@@ -65,6 +65,11 @@ function bboxAltitude(bbox: BBox): number {
   return Math.max(0.25, Math.min(1.6, span / 38));
 }
 
+function focusAltitude(bbox: BBox): number {
+  // Keep focus on the clicked country while preserving a full-globe framing.
+  return Math.max(1.95, Math.min(2.35, bboxAltitude(bbox)));
+}
+
 // ─── Neon cyan palette ─────────────────────────────────────────────────────
 const CYAN = "34,211,238"; // #22d3ee
 
@@ -134,9 +139,14 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
 
   // Load countries GeoJSON
   useEffect(() => {
-    fetch("/data/countries.geojson")
-      .then(r => r.json())
-      .then(data => setCountries(data.features));
+    const geoUrl = `${import.meta.env.BASE_URL}data/countries.geojson`;
+    fetch(geoUrl)
+      .then((r) => {
+        if (!r.ok) throw new Error(`GeoJSON load failed: ${r.status}`);
+        return r.json();
+      })
+      .then((data) => setCountries(data.features ?? []))
+      .catch(() => setCountries([]));
   }, []);
 
   const syncStarfieldToGlobe = useCallback(() => {
@@ -330,7 +340,7 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     const bbox = getFeatureBBox(feat);
     const lat  = (bbox.minLat + bbox.maxLat) / 2;
     const lng  = (bbox.minLng + bbox.maxLng) / 2;
-    const alt  = bboxAltitude(bbox);
+    const alt  = focusAltitude(bbox);
     globeRef.current?.pointOfView({ lat, lng, altitude: alt }, 1200);
 
     setSelectedFeature(feat);

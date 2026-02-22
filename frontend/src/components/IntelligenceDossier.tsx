@@ -183,8 +183,8 @@ For ${location} as of February 2026, return this exact JSON:
     {
       "title":      "<specific bold headline>",
       "summary":    "<2 sentence factual summary>",
-      "source":     <"Reuters"|"NYT"|"WSJ"|"BBC"|"AP">,
-      "url":        "<full https URL, must be a real accessible news link>",
+      "source":     "Google News",
+      "url":        "<full Google News URL from news.google.com/search?q=...>",
       "imageQuery": "<3-word Unsplash phrase>",
       "imageUrl":   "<optional https image URL>"
     }
@@ -216,6 +216,10 @@ For social posts:
 - Include exactly 5 posts total, exactly one for each context bucket listed.
 - Safety filter: exclude anything racist, hateful, profane, violent, or offensive.
 - Tone must be constructive, awareness-oriented, and humanitarian-positive.
+
+For articles:
+- Use ONLY Google News links from news.google.com.
+- Set source to exactly "Google News" for every article.
 
 Include exactly 3 articles, 5 social posts (one per context bucket), and 4 aid organizations. Be specific and factual.
 For URLs, avoid placeholders and return valid external links with https.`;
@@ -275,12 +279,38 @@ function sanitizeSocialPosts(country: string, posts: SocialPost[]): SocialPost[]
   return AID_CONTEXTS.map((context) => byContext.get(context) as SocialPost);
 }
 
+function sanitizeIntelArticles(country: string, articles: Article[]): Article[] {
+  const input = (articles ?? []).slice(0, 3);
+  const fixed = input.map((a) => {
+    const q = `${country} ${a.title || a.summary || "humanitarian crisis"}`;
+    return {
+      ...a,
+      source: "Google News",
+      url: ensureExternalUrl(a.url, q, "https://news.google.com/search?q="),
+    };
+  });
+
+  while (fixed.length < 3) {
+    const n = fixed.length + 1;
+    const q = `${country} humanitarian crisis update ${n}`;
+    fixed.push({
+      title: `${country} humanitarian update ${n}`,
+      summary: `Live coverage related to ${country}.`,
+      source: "Google News",
+      url: `https://news.google.com/search?q=${encodeURIComponent(q)}`,
+      imageQuery: `${country} humanitarian`,
+    });
+  }
+  return fixed;
+}
+
 async function fetchDossier(country: string, state?: string): Promise<DossierData> {
   const cacheKey = state ? `${country}::${state}` : country;
   const cached   = getCached(cacheKey);
   if (cached) {
     const sanitizedCached: DossierData = {
       ...cached,
+      articles: sanitizeIntelArticles(country, cached.articles ?? []),
       social: sanitizeSocialPosts(country, cached.social ?? []),
     };
     setCached(cacheKey, sanitizedCached);
@@ -302,31 +332,7 @@ async function fetchDossier(country: string, state?: string): Promise<DossierDat
   const raw  = await res.json();
   const data = JSON.parse(raw.choices[0].message.content) as DossierData;
 
-  // Replace hallucinated/broken article links with live searchable web results.
-  try {
-    const crisisTopic = data?.sectors?.food?.label || "humanitarian crisis";
-    const liveRes = await fetch(
-      `${BACKEND_URL}/api/news/search?country=${encodeURIComponent(country)}&crisis=${encodeURIComponent(crisisTopic)}&limit=3`
-    );
-    if (liveRes.ok) {
-      const live = await liveRes.json();
-      const liveArticles = (live?.articles ?? []) as Array<{
-        title: string; url: string; source: string; summary: string; imageQuery: string;
-      }>;
-      if (liveArticles.length > 0) {
-        data.articles = liveArticles.map((a) => ({
-          title: a.title,
-          summary: a.summary,
-          source: a.source,
-          url: a.url,
-          imageQuery: a.imageQuery,
-          imageUrl: `https://picsum.photos/seed/${encodeURIComponent(a.title || a.imageQuery || a.source)}/800/450`,
-        }));
-      }
-    }
-  } catch {
-    // keep Groq-provided articles as fallback
-  }
+  data.articles = sanitizeIntelArticles(country, data.articles ?? []);
 
   data.social = sanitizeSocialPosts(country, data.social ?? []);
 
@@ -336,90 +342,66 @@ async function fetchDossier(country: string, state?: string): Promise<DossierDat
 
 // ─── Databricks Funding Prediction ─────────────────────────────────────────
 async function fetchDatabricksPrediction(country: string): Promise<any> {
-  console.log('[FRONTEND] [Databricks] Starting prediction request for country:', country);
-  
+  console.log("[FRONTEND] [Databricks] Starting prediction request for country:", country);
+  const cacheKey = `${country}:${new Date().getFullYear()}`;
+  const cached = PRED_MEM_CACHE.get(cacheKey);
+  if (cached && Date.now() - cached.ts < PRED_TTL) {
+    console.log("[FRONTEND] [Databricks] Returning cached prediction:", cacheKey);
+    return cached.data;
+  }
+
   try {
-    // Step 1: Identify the humanitarian category for this country using Groq AI
-    console.log('[FRONTEND] [Category Identification] Calling backend to identify category for:', country);
-    const categoryRes = await fetch(`${BACKEND_URL}/api/identify-category`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+    // Fast-path category lookup with short timeout fallback.
+    const categoryReq = fetch(`${BACKEND_URL}/api/identify-category`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ country }),
     });
-
-    if (!categoryRes.ok) {
-      throw new Error(`Failed to identify category: ${categoryRes.status}`);
-    }
-
-    const categoryData = await categoryRes.json();
+    const categoryTimeout = new Promise<{ category: string }>((resolve) =>
+      window.setTimeout(() => resolve({ category: "Health" }), 1200)
+    );
+    const categoryData = await Promise.race([
+      categoryReq
+        .then(async (res) => (res.ok ? res.json() : { category: "Health" }))
+        .catch(() => ({ category: "Health" })),
+      categoryTimeout,
+    ]);
     const category = categoryData.category || "Health";
-    console.log('[FRONTEND] [Category Identification] Identified category:', category);
 
-    // Step 2: Use the identified category in the Databricks prediction request
-    const currentYear = new Date().getFullYear();
     const payload = {
       dataframe_records: [
         {
-          country: country,
-          category: category,
-          year: currentYear
-        }
-      ]
+          country,
+          category,
+          year: new Date().getFullYear(),
+        },
+      ],
     };
 
-    console.log('[FRONTEND] [Databricks] Request payload:', JSON.stringify(payload, null, 2));
-    console.log('[FRONTEND] [Databricks] Backend URL:', BACKEND_URL);
-    console.log('[FRONTEND] [Databricks] Calling backend proxy endpoint...');
-
     const startTime = Date.now();
-    const res = await fetch(`${BACKEND_URL}/api/databricks/predict`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+    const databricksReq = fetch(`${BACKEND_URL}/api/databricks/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    const reqTimeout = new Promise<Response>((_, reject) =>
+      window.setTimeout(() => reject(new Error("Databricks timed out")), 15000)
+    );
+    const res = (await Promise.race([databricksReq, reqTimeout])) as Response;
 
     const duration = Date.now() - startTime;
-    console.log('[FRONTEND] [Databricks] Response received:', {
-      status: res.status,
-      statusText: res.statusText,
-      duration: `${duration}ms`,
-      headers: Object.fromEntries(res.headers.entries()),
-    });
+    console.log("[FRONTEND] [Databricks] Response received in", `${duration}ms`);
 
     if (!res.ok) {
       const errorText = await res.text();
-      let errorData;
-      try {
-        errorData = JSON.parse(errorText);
-      } catch {
-        errorData = errorText;
-      }
-      console.error('[FRONTEND] [Databricks] Error response:', {
-        status: res.status,
-        statusText: res.statusText,
-        error: errorData,
-      });
-      throw new Error(`Databricks ${res.status}: ${JSON.stringify(errorData)}`);
+      throw new Error(`Databricks ${res.status}: ${errorText}`);
     }
 
     const result = await res.json();
-    console.log('[FRONTEND] [Databricks] Success! Response data:', {
-      result,
-      resultType: typeof result,
-      isArray: Array.isArray(result),
-      keys: result ? Object.keys(result) : null,
-    });
+    PRED_MEM_CACHE.set(cacheKey, { data: result, ts: Date.now() });
     return result;
   } catch (err) {
-    console.error('[FRONTEND] [Databricks] Request failed:', {
-      error: err instanceof Error ? err.message : String(err),
-      stack: err instanceof Error ? err.stack : undefined,
-      name: err instanceof Error ? err.name : undefined,
-    });
+    console.error("[FRONTEND] [Databricks] Request failed:", err);
     return null;
   }
 }
@@ -428,6 +410,8 @@ async function fetchDatabricksPrediction(country: string): Promise<any> {
 const OWM_KEY   = import.meta.env.VITE_OWM_API_KEY as string;
 const WEATHER_MEM_CACHE = new Map<string, { data: WeatherData; ts: number }>();
 const WEATHER_TTL = 60 * 60 * 1000;
+const PRED_MEM_CACHE = new Map<string, { data: any; ts: number }>();
+const PRED_TTL = 30 * 60 * 1000;
 
 const EXPLAIN_CACHE = new Map<string, string>();
 
@@ -1026,7 +1010,7 @@ function DatabricksPrediction({ predictionData }: { predictionData: any }) {
 }
 
 function IntelligenceCard({ article, index }: { article: Article; index: number }) {
-  const safeUrl = ensureExternalUrl(article.url, `${article.source} ${article.title}`);
+  const safeUrl = `https://news.google.com/search?q=${encodeURIComponent(`${article.title} ${article.summary}`)}`;
   const fallbackSeed = encodeURIComponent(article.title || article.imageQuery || article.source || `article-${index}`);
   const imgUrl = article.imageUrl || `https://picsum.photos/seed/${fallbackSeed}/800/450`;
   const open = () => { window.open(safeUrl, "_blank", "noopener,noreferrer"); };
@@ -1046,7 +1030,7 @@ function IntelligenceCard({ article, index }: { article: Article; index: number 
           <span className="text-[8px] font-mono font-bold text-white/20 tabular-nums">{String(index + 1).padStart(2, "0")}</span>
           <span className="text-[8px] font-mono font-bold uppercase tracking-widest px-1.5 py-0.5 rounded"
             style={{ background: "rgba(34,211,238,0.08)", color: "rgba(34,211,238,0.65)" }}>
-            {article.source}
+            Google News
           </span>
         </div>
         <span className="text-white/18 text-[9px] font-mono opacity-0 group-hover:opacity-100 transition-opacity">↗ open</span>
@@ -1063,7 +1047,7 @@ function IntelligenceCard({ article, index }: { article: Article; index: number 
               el.src = seeded;
               return;
             }
-            el.src = `https://placehold.co/800x450/020617/94a3b8?text=${encodeURIComponent(article.source)}`;
+            el.src = "https://placehold.co/800x450/020617/94a3b8?text=Google%20News";
           }}
         />
         <h3 className="text-white/90 font-semibold text-[12px] leading-snug tracking-tight mb-1.5 group-hover:text-white transition-colors">
@@ -1676,16 +1660,36 @@ function SocialCard({ post, index, country }: { post: SocialPost; index: number;
 
       {/* Caption */}
       <div className="px-4 py-3">
-        <a href={twitterSearch} target="_blank" rel="noopener noreferrer">
+        <a href={twitterSearch} target="_blank" rel="noopener noreferrer" className="relative block mb-2.5">
           <img
             src={cover}
             alt={`${context} context`}
-            className="mb-2.5 h-32 w-full rounded-md object-cover border border-white/10"
+            className="h-32 w-full rounded-md object-cover border border-white/10"
             onError={(e) => {
               (e.currentTarget as HTMLImageElement).src =
                 `https://placehold.co/1200x675/020617/94a3b8?text=${encodeURIComponent("Social Context")}`;
             }}
           />
+          <div
+            className="pointer-events-none absolute inset-0 flex items-center justify-center"
+            aria-hidden="true"
+          >
+            <div className="rounded-full border border-white/30 bg-black/55 px-3 py-2 backdrop-blur-sm">
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                className="text-white/90"
+              >
+                <path
+                  d="M5 4H9L13 10L18 4H20L14 11L21 20H16L11 13L6 20H4L10 12L5 4Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </div>
+          </div>
         </a>
         <p className="text-cyan-300/70 text-[9px] font-mono uppercase tracking-[0.14em] mb-2">{context}</p>
         <p className="text-white/72 text-[12px] leading-relaxed mb-2.5">{post.caption}</p>

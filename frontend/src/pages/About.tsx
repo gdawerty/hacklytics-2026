@@ -1,120 +1,55 @@
-import { Suspense } from "react";
-import { motion } from "framer-motion";
-import AboutGlobeBackground from "@/components/AboutGlobeBackground";
-import { NavLink } from "@/components/NavLink";
+import { Link } from "react-router-dom";
+import StarfieldCanvas from "@/components/StarfieldCanvas";
 
 export default function About() {
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.1,
-        delayChildren: 0.2,
-      },
-    },
-  };
-
-  const itemVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: {
-      opacity: 1,
-      y: 0,
-      transition: { duration: 0.6, ease: "easeOut" },
-    },
-  };
-
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-background">
-      {/* Animated globe background with error nodes */}
-      <Suspense
-        fallback={
-          <div className="flex h-full items-center justify-center text-muted-foreground">
-            Loading globe…
+    <div className="relative min-h-screen overflow-hidden bg-black">
+      <StarfieldCanvas />
+      <main className="relative z-10 mx-auto max-w-5xl px-6 pb-16 pt-8 md:px-10">
+        <header className="mb-8 flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/45 px-5 py-3 backdrop-blur-xl">
+          <h1 className="text-2xl font-semibold text-white">About Aegis</h1>
+          <div className="flex items-center gap-2">
+            <Link to="/" className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-white/75 hover:text-white hover:border-white/25 transition-colors">
+              Home
+            </Link>
+            <Link to="/contact" className="rounded-md border border-white/10 px-3 py-1.5 text-sm text-white/75 hover:text-white hover:border-white/25 transition-colors">
+              Contact
+            </Link>
+            <Link to="/dashboard" className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-sm text-cyan-200 hover:bg-cyan-500/20 transition-colors">
+              Open Model
+            </Link>
           </div>
-        }
-      >
-        <AboutGlobeBackground />
-      </Suspense>
+        </header>
 
-      {/* Navigation */}
-      <NavLink to="/" className="absolute top-8 left-8 z-20">
-        ← Back to Map
-      </NavLink>
+        <section className="rounded-2xl border border-white/10 bg-slate-900/40 p-8 backdrop-blur-xl">
+          <p className="text-[11px] uppercase tracking-[0.2em] font-mono text-cyan-300/75">Mission</p>
+          <h2 className="mt-2 text-4xl font-bold tracking-tight text-white">Decision support for humanitarian response.</h2>
+          <p className="mt-4 max-w-3xl text-white/65 leading-relaxed">
+            Aegis is a crisis-intelligence platform for identifying risk patterns, monitoring funding gaps, and surfacing intervention context in one operational view.
+          </p>
+        </section>
 
-      {/* Text content overlay with blur and semi-transparency */}
-      <motion.div
-        className="absolute inset-0 flex flex-col items-center justify-center z-10 pointer-events-none"
-        variants={containerVariants}
-        initial="hidden"
-        animate="visible"
-      >
-        {/* Main content card */}
-        <motion.div
-          className="pointer-events-auto bg-background/60 border border-cyan-500/30 rounded-lg p-12 max-w-2xl shadow-2xl"
-          variants={itemVariants}
-          whileHover={{ boxShadow: "0 0 20px rgba(34, 211, 238, 0.3)" }}
-        >
-          {/* Title */}
-          <motion.h1
-            className="text-4xl font-bold tracking-tight text-foreground mb-6"
-            variants={itemVariants}
-          >
-            About Hacklytics
-          </motion.h1>
-
-          {/* Mission */}
-          <motion.div className="mb-6" variants={itemVariants}>
-            <h2 className="text-xl font-semibold text-cyan-400 mb-3">Our Mission</h2>
-            <p className="text-muted-foreground leading-relaxed">
-              Hacklytics is a humanitarian crisis prediction system designed to identify and forecast 
-              global humanitarian emergencies. By analyzing real-time data and patterns, we help 
-              organizations prepare and respond to crises before they escalate.
-            </p>
-          </motion.div>
-
-          {/* How it Works */}
-          <motion.div className="mb-6" variants={itemVariants}>
-            <h2 className="text-xl font-semibold text-cyan-400 mb-3">How It Works</h2>
-            <p className="text-muted-foreground leading-relaxed">
-              Our system monitors crisis indicators across multiple sectors—health, water, food security, 
-              and displacement patterns. The globe behind this overlay highlights active crisis zones, 
-              while animated error nodes represent key areas of concern. Each node is analyzed for operational 
-              capacity, sector gaps, and trending underfunding.
-            </p>
-          </motion.div>
-
-          {/* Technology */}
-          <motion.div className="mb-6" variants={itemVariants}>
-            <h2 className="text-xl font-semibold text-cyan-400 mb-3">Technology Stack</h2>
-            <ul className="text-muted-foreground leading-relaxed space-y-2">
-              <li>• <span className="text-cyan-300">Globe Visualization:</span> React Globe GL with real-time data projection</li>
-              <li>• <span className="text-cyan-300">AI Analysis:</span> Groq Llama-3.3-70b for intelligent crisis assessment</li>
-              <li>• <span className="text-cyan-300">Weather Data:</span> Open-Meteo for regional environmental context</li>
-              <li>• <span className="text-cyan-300">Animations:</span> Framer Motion for smooth, responsive UI transitions</li>
+        <section className="mt-6 grid gap-4 md:grid-cols-2">
+          <div className="rounded-xl border border-white/10 bg-slate-950/45 p-5 backdrop-blur-xl">
+            <h3 className="text-white font-semibold">What We Analyze</h3>
+            <ul className="mt-3 space-y-2 text-sm text-white/65">
+              <li>Conflict, displacement, and protection pressure</li>
+              <li>Food, WASH, health, and education strain</li>
+              <li>Funding needs versus real-time support levels</li>
+              <li>Country and regional intelligence context</li>
             </ul>
-          </motion.div>
-
-          {/* CTA */}
-          <motion.div className="mt-8" variants={itemVariants}>
-            <p className="text-sm text-muted-foreground italic">
-              Explore the map to view crisis predictions and detailed intelligence dossiers for each region.
-            </p>
-          </motion.div>
-        </motion.div>
-      </motion.div>
-
-      {/* Floating accents */}
-      <motion.div
-        className="absolute top-20 right-20 w-32 h-32 rounded-full border border-cyan-500/20"
-        animate={{ rotate: 360 }}
-        transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-      />
-      <motion.div
-        className="absolute bottom-20 left-20 w-24 h-24 rounded-full border border-cyan-500/20"
-        animate={{ rotate: -360 }}
-        transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
-      />
+          </div>
+          <div className="rounded-xl border border-white/10 bg-slate-950/45 p-5 backdrop-blur-xl">
+            <h3 className="text-white font-semibold">Technology Stack</h3>
+            <ul className="mt-3 space-y-2 text-sm text-white/65">
+              <li>Interactive globe visualization</li>
+              <li>LLM-assisted intelligence enrichment (Groq)</li>
+              <li>Funding prediction pipeline (Databricks)</li>
+              <li>Operational UI for analysts and decision teams</li>
+            </ul>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }
