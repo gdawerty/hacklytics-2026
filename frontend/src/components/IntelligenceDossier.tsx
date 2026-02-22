@@ -1061,8 +1061,125 @@ function IntelligenceCard({ article, index }: { article: Article; index: number 
 
 // ─── Solution cache to avoid redundant API calls ──────────────────────────
 const SOLUTION_CACHE = new Map<string, {analogousCountry: string; solution: string; likelihood: number}>();
+const CRISIS_CACHE = new Map<string, { hasCrisis: boolean; articles: any[]; ts: number }>();
+const FUNDING_CACHE = new Map<string, { data: Record<string, number>; ts: number }>();
 
-// ─── Fetch Groq UN Solution for a category ────────────────────────────────
+const CRISIS_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const FUNDING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// ─── Detect if a country has an active crisis ────────────────────────────
+async function detectCrisisInCountry(country: string): Promise<{ hasCrisis: boolean; articles: any[] }> {
+  const cacheKey = country.toLowerCase();
+  const cached = CRISIS_CACHE.get(cacheKey);
+  
+  if (cached && Date.now() - cached.ts < CRISIS_CACHE_TTL) {
+    console.log(`[FRONTEND] [Crisis] Using cached crisis data for ${country}`);
+    return { hasCrisis: cached.hasCrisis, articles: cached.articles };
+  }
+  
+  console.log(`[FRONTEND] [Crisis] Detecting crisis for ${country}`);
+  
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/detect-crisis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ country }),
+    });
+    
+    if (!response.ok) {
+      console.error(`[FRONTEND] [Crisis] Failed to detect crisis for ${country}`);
+      return { hasCrisis: false, articles: [] };
+    }
+    
+    const data = await response.json();
+    const result = {
+      hasCrisis: data.hasCrisis ?? false,
+      articles: data.articles ?? [],
+    };
+    
+    CRISIS_CACHE.set(cacheKey, { ...result, ts: Date.now() });
+    console.log(`[FRONTEND] [Crisis] Crisis detection for ${country}: hasCrisis=${result.hasCrisis}`);
+    return result;
+  } catch (error) {
+    console.error(`[FRONTEND] [Crisis] Error detecting crisis for ${country}:`, error);
+    return { hasCrisis: false, articles: [] };
+  }
+}
+
+// ─── Classify articles into a crisis category ────────────────────────────
+async function classifyArticlesIntoCrisis(country: string, articles: any[]): Promise<string> {
+  if (!articles || articles.length === 0) return 'Health';
+  
+  console.log(`[FRONTEND] [Classify] Classifying articles for ${country}`);
+  
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/classify-crisis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ country, articles }),
+    });
+    
+    if (!response.ok) {
+      console.error(`[FRONTEND] [Classify] Failed to classify crisis for ${country}`);
+      return 'Health';
+    }
+    
+    const data = await response.json();
+    const category = data.primary_category ?? 'Health';
+    
+    console.log(`[FRONTEND] [Classify] Classified ${country} crisis as: ${category}`);
+    return category;
+  } catch (error) {
+    console.error(`[FRONTEND] [Classify] Error classifying crisis for ${country}:`, error);
+    return 'Health';
+  }
+}
+
+// ─── Fetch previous year funding baseline ─────────────────────────────────
+async function fetchPreviousYearFunding(country: string): Promise<Record<string, number>> {
+  const cacheKey = country.toLowerCase();
+  const cached = FUNDING_CACHE.get(cacheKey);
+  
+  if (cached && Date.now() - cached.ts < FUNDING_CACHE_TTL) {
+    console.log(`[FRONTEND] [Funding] Using cached funding data for ${country}`);
+    return cached.data;
+  }
+  
+  console.log(`[FRONTEND] [Funding] Fetching previous year funding for ${country}`);
+  
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/previous-year-funding`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ country }),
+    });
+    
+    if (!response.ok) {
+      console.error(`[FRONTEND] [Funding] Failed to fetch funding for ${country}`);
+      // Return minimal fallback
+      return { WASH: 0, Health: 0, Nutrition: 0, Protection: 0, Education: 0 };
+    }
+    
+    const data = await response.json();
+    const result = {
+      WASH: data.WASH ?? 0,
+      Health: data.Health ?? 0,
+      Nutrition: data.Nutrition ?? 0,
+      Protection: data.Protection ?? 0,
+      Education: data.Education ?? 0,
+      total: data.total ?? 0,
+    };
+    
+    FUNDING_CACHE.set(cacheKey, { data: result, ts: Date.now() });
+    console.log(`[FRONTEND] [Funding] Previous year funding for ${country}: $${(result.total / 1e9).toFixed(2)}B`);
+    return result;
+  } catch (error) {
+    console.error(`[FRONTEND] [Funding] Error fetching funding for ${country}:`, error);
+    return { WASH: 0, Health: 0, Nutrition: 0, Protection: 0, Education: 0 };
+  }
+}
+
+// ─── Fetch UN Solution for a category ────────────────────────────────────
 async function fetchUNSolution(country: string, category: string): Promise<{analogousCountry: string; solution: string; likelihood: number}> {
   const cacheKey = `${country}:${category}`;
   
@@ -1293,6 +1410,9 @@ function ContextExplain({
 function FundingBeastModule({ country, state }: { country: string; state?: string }) {
   const [mitigation, setMitigation] = useState<MitigationFundingData | null>(null);
   const [categoryLoading, setCategoryLoading] = useState(true);
+  const [hasCrisis, setHasCrisis] = useState(false);
+  const [crisisArticles, setCrisisArticles] = useState<any[]>([]);
+  const [fundingByCategory, setFundingByCategory] = useState<Record<string, number>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -1300,100 +1420,182 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
 
     const fetchAndBuildMitigation = async () => {
       try {
-        // Fetch predictions for all 5 categories
-        const { categoryResults, underfundingPct } = await fetchAllCategoryPredictions(country);
-
-        if (cancelled) return;
-
-        // Build mitigation data using the fetched category predictions
-        const seed = hashSeed(`${country}::${state ?? "country"}`);
-        const totalGoal = 2_000_000_000 + (seed % 9) * 100_000_000; // 2.0B - 2.8B
+        // Step 1: Detect if country has an active crisis
+        console.log(`[FRONTEND] [FundingBeast] Starting crisis detection for ${country}`);
+        const crisisResult = await detectCrisisInCountry(country);
         
-        // Use underfunding percentage from categories to calculate current funding
-        const currentFundingRatio = Math.max(0.35, Math.min(0.9, 1 - (underfundingPct / 100)));
-        const currentFunding = Math.round(totalGoal * currentFundingRatio);
-
-        const templates: Array<{
-          name: MitigationCategory["name"];
-          needRatio: number;
-          recvRatio: number;
-          impactScore: number;
-          originPlan: string;
-        }> = [
-          { name: "WASH",       needRatio: 0.26, recvRatio: 0.43, impactScore: 82, originPlan: "UN OCHA" },
-          { name: "Health",     needRatio: 0.24, recvRatio: 0.48, impactScore: 88, originPlan: "WHO" },
-          { name: "Nutrition",  needRatio: 0.18, recvRatio: 0.39, impactScore: 79, originPlan: "UNICEF" },
-          { name: "Protection", needRatio: 0.16, recvRatio: 0.34, impactScore: 84, originPlan: "Red Cross" },
-          { name: "Education",  needRatio: 0.16, recvRatio: 0.37, impactScore: 73, originPlan: "Save the Children" },
-        ];
-
-        // Build initial categories with underfunding data
-        let categories = templates.map((t) => {
-          const categoryUnderfunding = categoryResults[t.name] || underfundingPct;
-          const underfundingMultiplier = 1 + (categoryUnderfunding / 100);
-          const needAmount = Math.round(totalGoal * t.needRatio * underfundingMultiplier);
-          const receivedAmount = Math.round(needAmount * t.recvRatio);
-          const gapRatio = Math.max(0, (needAmount - receivedAmount) / Math.max(needAmount, 1));
-          const successIfFunded = Math.round(Math.min(96, t.impactScore + gapRatio * 14));
-
-          console.log(`[FRONTEND] [FundingBeast] ${t.name}: underfunding=${categoryUnderfunding}%, need=${needAmount}`);
-
-          return {
-            name: t.name,
-            needAmount,
-            receivedAmount,
-            impactScore: t.impactScore,
-            originPlan: t.originPlan,
-            successIfFunded,
-            underfundingPct: categoryUnderfunding,
-          } satisfies MitigationCategory;
-        });
-
-        // Sort by underfunding and get top 3 most significant
-        const topThree = categories
-          .sort((a, b) => (b.underfundingPct || 0) - (a.underfundingPct || 0))
-          .slice(0, 3);
-
-        // Fetch UN solutions for the top 3 underfunded categories (SEQUENTIALLY to avoid rate limiting)
-        console.log('[FRONTEND] [FundingBeast] Fetching UN solutions for top 3 categories:', topThree.map(c => c.name));
-        const solutionResults = [];
-        for (let i = 0; i < topThree.length; i++) {
-          const cat = topThree[i];
-          // Add substantial delay between requests (4+ seconds between each to avoid rate limits)
-          if (i > 0) {
-            console.log(`[FRONTEND] [FundingBeast] Waiting 4s before fetching solution ${i + 1}/3...`);
-            await new Promise(resolve => setTimeout(resolve, 4000));
-          }
-          console.log(`[FRONTEND] [FundingBeast] Fetching solution ${i + 1}/3 for ${cat.name}...`);
-          const solution = await fetchUNSolution(country, cat.name);
-          solutionResults.push({ categoryName: cat.name, solution });
-        }
-
         if (cancelled) return;
 
-        // Update categories with solution data
-        const solutionMap = new Map(solutionResults.map(r => [r.categoryName, r.solution]));
-        categories = categories.map(cat => {
-          const solutionData = solutionMap.get(cat.name);
-          if (solutionData) {
+        setHasCrisis(crisisResult.hasCrisis);
+        setCrisisArticles(crisisResult.articles || []);
+
+        if (crisisResult.hasCrisis && crisisResult.articles.length > 0) {
+          // ──── CRISIS PATH: Classify crisis and fetch underfunding predictions ────
+          console.log(`[FRONTEND] [FundingBeast] Crisis detected in ${country}. Classifying into category...`);
+          
+          const crisisCategory = await classifyArticlesIntoCrisis(country, crisisResult.articles);
+          
+          if (cancelled) return;
+
+          // Now fetch underfunding predictions for all categories
+          console.log(`[FRONTEND] [FundingBeast] Fetching underfunding predictions for ${country}`);
+          const { categoryResults, underfundingPct } = await fetchAllCategoryPredictions(country);
+
+          if (cancelled) return;
+
+          // Build mitigation data for this crisis
+          const seed = hashSeed(`${country}::${state ?? "country"}`);
+          const totalGoal = 2_000_000_000 + (seed % 9) * 100_000_000; // 2.0B - 2.8B
+          const currentFundingRatio = Math.max(0.35, Math.min(0.9, 1 - (underfundingPct / 100)));
+          const currentFunding = Math.round(totalGoal * currentFundingRatio);
+
+          const templates: Array<{
+            name: MitigationCategory["name"];
+            needRatio: number;
+            recvRatio: number;
+            impactScore: number;
+            originPlan: string;
+          }> = [
+            { name: "WASH",       needRatio: 0.26, recvRatio: 0.43, impactScore: 82, originPlan: "UN OCHA" },
+            { name: "Health",     needRatio: 0.24, recvRatio: 0.48, impactScore: 88, originPlan: "WHO" },
+            { name: "Nutrition",  needRatio: 0.18, recvRatio: 0.39, impactScore: 79, originPlan: "UNICEF" },
+            { name: "Protection", needRatio: 0.16, recvRatio: 0.34, impactScore: 84, originPlan: "Red Cross" },
+            { name: "Education",  needRatio: 0.16, recvRatio: 0.37, impactScore: 73, originPlan: "Save the Children" },
+          ];
+
+          let categories = templates.map((t) => {
+            const categoryUnderfunding = categoryResults[t.name] || underfundingPct;
+            const underfundingMultiplier = 1 + (categoryUnderfunding / 100);
+            const needAmount = Math.round(totalGoal * t.needRatio * underfundingMultiplier);
+            const receivedAmount = Math.round(needAmount * t.recvRatio);
+            const gapRatio = Math.max(0, (needAmount - receivedAmount) / Math.max(needAmount, 1));
+            const successIfFunded = Math.round(Math.min(96, t.impactScore + gapRatio * 14));
+
+            console.log(`[FRONTEND] [FundingBeast] [CRISIS] ${t.name}: underfunding=${categoryUnderfunding}%, need=${needAmount}`);
+
             return {
-              ...cat,
-              analogousCountry: solutionData.analogousCountry,
-              solution: solutionData.solution,
-              successIfFunded: solutionData.likelihood, // Use Groq's likelihood estimate
-            };
+              name: t.name,
+              needAmount,
+              receivedAmount,
+              impactScore: t.impactScore,
+              originPlan: t.originPlan,
+              successIfFunded,
+              underfundingPct: categoryUnderfunding,
+            } satisfies MitigationCategory;
+          });
+
+          // Sort by underfunding and get top 3
+          const topThree = categories
+            .sort((a, b) => (b.underfundingPct || 0) - (a.underfundingPct || 0))
+            .slice(0, 3);
+
+          // Fetch UN solutions for top 3 categories (sequentially)
+          console.log('[FRONTEND] [FundingBeast] [CRISIS] Fetching UN solutions for top 3 categories:', topThree.map(c => c.name));
+          const solutionResults = [];
+          for (let i = 0; i < topThree.length; i++) {
+            const cat = topThree[i];
+            if (i > 0) {
+              console.log(`[FRONTEND] [FundingBeast] [CRISIS] Waiting 4s before fetching solution ${i + 1}/3...`);
+              await new Promise(resolve => setTimeout(resolve, 4000));
+            }
+            console.log(`[FRONTEND] [FundingBeast] [CRISIS] Fetching solution ${i + 1}/3 for ${cat.name}...`);
+            const solution = await fetchUNSolution(country, cat.name);
+            solutionResults.push({ categoryName: cat.name, solution });
           }
-          return cat;
-        });
 
-        const result: MitigationFundingData = {
-          totalGoal,
-          currentFunding,
-          categories,
-        };
+          if (cancelled) return;
 
-        if (!cancelled) {
-          setMitigation(result);
+          // Update categories with solution data
+          const solutionMap = new Map(solutionResults.map(r => [r.categoryName, r.solution]));
+          categories = categories.map(cat => {
+            const solutionData = solutionMap.get(cat.name);
+            if (solutionData) {
+              return {
+                ...cat,
+                analogousCountry: solutionData.analogousCountry,
+                solution: solutionData.solution,
+                successIfFunded: solutionData.likelihood,
+              };
+            }
+            return cat;
+          });
+
+          const result: MitigationFundingData = {
+            totalGoal,
+            currentFunding,
+            categories,
+          };
+
+          if (!cancelled) {
+            setMitigation(result);
+          }
+        } else {
+          // ──── NO CRISIS PATH: Show previous year funding baseline ────
+          console.log(`[FRONTEND] [FundingBeast] No crisis detected in ${country}. Fetching baseline funding...`);
+          
+          const fundingData = await fetchPreviousYearFunding(country);
+          
+          if (cancelled) return;
+
+          setFundingByCategory(fundingData);
+          
+          // Still create a minimal mitigation object showing baseline (all zeroed except what's already received)
+          const baselineMitigation: MitigationFundingData = {
+            totalGoal: fundingData.total || 2_000_000_000,
+            currentFunding: fundingData.total || 2_000_000_000,
+            categories: [
+              { 
+                name: "WASH", 
+                needAmount: fundingData.WASH || 0, 
+                receivedAmount: fundingData.WASH || 0,
+                underfundingPct: 0,
+                impactScore: 0,
+                originPlan: "",
+                successIfFunded: 0
+              },
+              { 
+                name: "Health", 
+                needAmount: fundingData.Health || 0, 
+                receivedAmount: fundingData.Health || 0,
+                underfundingPct: 0,
+                impactScore: 0,
+                originPlan: "",
+                successIfFunded: 0
+              },
+              { 
+                name: "Nutrition", 
+                needAmount: fundingData.Nutrition || 0, 
+                receivedAmount: fundingData.Nutrition || 0,
+                underfundingPct: 0,
+                impactScore: 0,
+                originPlan: "",
+                successIfFunded: 0
+              },
+              { 
+                name: "Protection", 
+                needAmount: fundingData.Protection || 0, 
+                receivedAmount: fundingData.Protection || 0,
+                underfundingPct: 0,
+                impactScore: 0,
+                originPlan: "",
+                successIfFunded: 0
+              },
+              { 
+                name: "Education", 
+                needAmount: fundingData.Education || 0, 
+                receivedAmount: fundingData.Education || 0,
+                underfundingPct: 0,
+                impactScore: 0,
+                originPlan: "",
+                successIfFunded: 0
+              },
+            ],
+          };
+
+          if (!cancelled) {
+            setMitigation(baselineMitigation);
+            console.log(`[FRONTEND] [FundingBeast] [NO CRISIS] Baseline funding for ${country}: $${(fundingData.total / 1e9).toFixed(2)}B`);
+          }
         }
       } catch (error) {
         console.error('[FRONTEND] [FundingBeast] Error building mitigation data:', error);
@@ -1406,6 +1608,7 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
           setCategoryLoading(false);
         }
       }
+
     };
 
     fetchAndBuildMitigation();
@@ -1437,101 +1640,174 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
 
   return (
     <div className="rounded-xl border border-white/10 bg-slate-950/40 backdrop-blur-xl p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-[9px] text-white/30 uppercase tracking-[0.2em] font-mono font-semibold">
-          Crisis Mitigation &amp; Solutions {categoryLoading && <span className="text-cyan-400 animate-pulse">●</span>}
-        </p>
-        <span className="text-[9px] font-mono text-white/35">Goal {formatMoneyCompact(totalGoal)}</span>
-      </div>
-
-      <div className="space-y-2">
-        <div className="relative h-3 w-full rounded-full overflow-hidden border border-white/10 bg-black/45">
-          <motion.div
-            className="absolute left-0 top-0 h-full"
-            style={{ background: "#22d3ee", boxShadow: "0 0 10px rgba(34,211,238,0.45)" }}
-            initial={{ width: 0 }}
-            animate={{ width: `${receivedPct}%` }}
-            transition={{ type: "spring", stiffness: 220, damping: 26 }}
-          />
-          <motion.div
-            className="absolute top-0 h-full"
-            style={{
-              left: `${receivedPct}%`,
-              background:
-                "repeating-linear-gradient(135deg, rgba(239,68,68,0.92) 0, rgba(239,68,68,0.92) 5px, rgba(239,68,68,0.58) 5px, rgba(239,68,68,0.58) 10px)",
-            }}
-            initial={{ width: 0, opacity: 0.5 }}
-            animate={{ width: `${predictedPct}%`, opacity: [0.45, 0.95, 0.45] }}
-            transition={{
-              width: { type: "spring", stiffness: 210, damping: 24 },
-              opacity: { repeat: Infinity, duration: 1.4, ease: "easeInOut" },
-            }}
-          />
-          <div
-            className="absolute right-0 top-[-2px] h-[18px] w-[2px] bg-white/80"
-            style={{ boxShadow: "0 0 8px rgba(255,255,255,0.65)" }}
-          />
-        </div>
-
-        <div className="grid grid-cols-3 gap-2 text-[9px] font-mono uppercase tracking-wider">
-          <div>
-            <p className="text-cyan-300/85">Received</p>
-            <p className="text-white/85 text-[11px] normal-case">{formatMoneyCompact(shownReceived)}</p>
+      {hasCrisis ? (
+        // ──── CRISIS MODE ────
+        <>
+          <div className="flex items-center justify-between">
+            <p className="text-[9px] text-red-400 uppercase tracking-[0.2em] font-mono font-semibold">
+              🚨 Active Crisis Detected {categoryLoading && <span className="text-red-500 animate-pulse">●</span>}
+            </p>
+            <span className="text-[9px] font-mono text-white/35">Goal {formatMoneyCompact(mitigation?.totalGoal || 0)}</span>
           </div>
-          <div>
-            <p className="text-red-400/85">Predicted Need</p>
-            <p className="text-white/85 text-[11px] normal-case">{formatMoneyCompact(shownPredicted)}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-white/45">Funding Gap</p>
-            <p className="text-white text-[11px] normal-case">{Math.round((predictedNeeded / Math.max(totalGoal, 1)) * 100)}%</p>
-          </div>
-        </div>
-      </div>
 
-      <div className="pt-1 border-t border-white/10 space-y-2">
-        <p className="text-[9px] text-white/30 uppercase tracking-[0.2em] font-mono font-semibold">
-          Top Underfunded Sectors
-        </p>
-        {ranked.map((sector, idx) => (
-          <div
-            key={sector.name}
-            className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
-            style={{
-              boxShadow: idx === 0 ? "0 0 0 1px rgba(239,68,68,0.35) inset" : "none",
-            }}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex-1">
-                <p className="text-[11px] font-mono font-bold text-white">{sector.name}</p>
-                {sector.analogousCountry ? (
-                  <p className="text-[9px] font-mono text-cyan-400/70">Analogous: {sector.analogousCountry}</p>
-                ) : (
-                  <p className="text-[9px] font-mono text-white/35">Origin of Plan · {sector.originPlan}</p>
-                )}
-              </div>
-              <span className="text-[10px] font-mono font-bold text-red-400">
-                {formatMoneyCompact(sector.fundingGap)} gap
-              </span>
+          {crisisArticles.length > 0 && (
+            <div className="space-y-2 bg-red-950/20 border border-red-400/20 rounded-lg p-3">
+              <p className="text-[9px] text-red-300 uppercase tracking-[0.2em] font-mono font-semibold">
+                Crisis Articles
+              </p>
+              {crisisArticles.slice(0, 3).map((article, idx) => (
+                <div key={idx} className="text-[9px] text-red-100/80 border-l border-red-400/30 pl-2">
+                  <p className="font-semibold">{article.title || article.source || `Article ${idx + 1}`}</p>
+                  {article.summary && <p className="text-red-100/60 text-[8px] mt-1">{article.summary}</p>}
+                </div>
+              ))}
             </div>
-            
-            {sector.solution && (
-              <div className="mt-2 rounded-md bg-cyan-900/20 border border-cyan-500/20 px-2 py-1.5">
-                <p className="text-[8px] text-cyan-300/80 font-mono uppercase tracking-wider mb-1">UN Solution</p>
-                <p className="text-[9px] font-mono text-cyan-100/90 leading-snug">{sector.solution}</p>
-              </div>
-            )}
-            
-            <div className="mt-2 flex items-center justify-between text-[9px] font-mono">
-              <span className="text-white/40">Likelihood of Success</span>
-              <span className="text-cyan-300 font-bold">{sector.successIfFunded}% if filled</span>
+          )}
+
+          <div className="space-y-2">
+            <div className="relative h-3 w-full rounded-full overflow-hidden border border-white/10 bg-black/45">
+              <motion.div
+                className="absolute left-0 top-0 h-full"
+                style={{ background: "#22d3ee", boxShadow: "0 0 10px rgba(34,211,238,0.45)" }}
+                initial={{ width: 0 }}
+                animate={{ width: `${(mitigation?.currentFunding || 0) / Math.max(mitigation?.totalGoal || 1, 1) * 100}%` }}
+                transition={{ type: "spring", stiffness: 220, damping: 26 }}
+              />
+              <motion.div
+                className="absolute top-0 h-full"
+                style={{
+                  left: `${(mitigation?.currentFunding || 0) / Math.max(mitigation?.totalGoal || 1, 1) * 100}%`,
+                  background:
+                    "repeating-linear-gradient(135deg, rgba(239,68,68,0.92) 0, rgba(239,68,68,0.92) 5px, rgba(239,68,68,0.58) 5px, rgba(239,68,68,0.58) 10px)",
+                }}
+                initial={{ width: 0, opacity: 0.5 }}
+                animate={{ width: `${Math.max(0, 100 - (mitigation?.currentFunding || 0) / Math.max(mitigation?.totalGoal || 1, 1) * 100)}%`, opacity: [0.45, 0.95, 0.45] }}
+                transition={{
+                  width: { type: "spring", stiffness: 210, damping: 24 },
+                  opacity: { repeat: Infinity, duration: 1.4, ease: "easeInOut" },
+                }}
+              />
             </div>
-            <ContextExplain country={state ?? country} kind="solution" target={`${sector.name} Plan`} />
+
+            <div className="grid grid-cols-3 gap-2 text-[9px] font-mono uppercase tracking-wider">
+              <div>
+                <p className="text-cyan-300/85">Received</p>
+                <p className="text-white/85 text-[11px] normal-case">{formatMoneyCompact(mitigation?.currentFunding || 0)}</p>
+              </div>
+              <div>
+                <p className="text-red-400/85">Crisis Need</p>
+                <p className="text-white/85 text-[11px] normal-case">{formatMoneyCompact(mitigation?.totalGoal || 0)}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-white/45">Underfunding Gap</p>
+                <p className="text-white text-[11px] normal-case">
+                  {Math.round(((mitigation?.totalGoal || 0) - (mitigation?.currentFunding || 0)) / Math.max(mitigation?.totalGoal || 1, 1) * 100)}%
+                </p>
+              </div>
+            </div>
           </div>
-        ))}
-      </div>
+
+          <div className="pt-1 border-t border-white/10 space-y-2">
+            <p className="text-[9px] text-white/30 uppercase tracking-[0.2em] font-mono font-semibold">
+              Top Underfunded Sectors
+            </p>
+            {(mitigation?.categories || [])
+              .sort((a, b) => (b.underfundingPct || 0) - (a.underfundingPct || 0))
+              .slice(0, 3)
+              .map((sector, idx) => (
+                <div
+                  key={sector.name}
+                  className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
+                  style={{
+                    boxShadow: idx === 0 ? "0 0 0 1px rgba(239,68,68,0.35) inset" : "none",
+                  }}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1">
+                      <p className="text-[11px] font-mono font-bold text-white">{sector.name}</p>
+                      {sector.analogousCountry ? (
+                        <p className="text-[9px] font-mono text-cyan-400/70">Analogous: {sector.analogousCountry}</p>
+                      ) : (
+                        <p className="text-[9px] font-mono text-white/35">Origin of Plan · {sector.originPlan}</p>
+                      )}
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-red-400">
+                      {sector.underfundingPct?.toFixed(1) || "0"}% gap
+                    </span>
+                  </div>
+                  
+                  {sector.solution && (
+                    <div className="mt-2 rounded-md bg-cyan-900/20 border border-cyan-500/20 px-2 py-1.5">
+                      <p className="text-[8px] text-cyan-300/80 font-mono uppercase tracking-wider mb-1">UN Solution</p>
+                      <p className="text-[9px] font-mono text-cyan-100/90 leading-snug">{sector.solution}</p>
+                    </div>
+                  )}
+                  
+                  <div className="mt-2 flex items-center justify-between text-[9px] font-mono">
+                    <span className="text-white/40">Success if Funded</span>
+                    <span className="text-cyan-300 font-bold">{sector.successIfFunded}%</span>
+                  </div>
+                  <ContextExplain country={state ?? country} kind="solution" target={`${sector.name} Plan`} />
+                </div>
+              ))}
+          </div>
+        </>
+      ) : (
+        // ──── NO CRISIS MODE ────
+        <>
+          <div className="flex items-center justify-between">
+            <p className="text-[9px] text-cyan-400 uppercase tracking-[0.2em] font-mono font-semibold">
+              ✓ Baseline Funding (No Active Crisis) {categoryLoading && <span className="text-cyan-400 animate-pulse">●</span>}
+            </p>
+            <span className="text-[9px] font-mono text-white/35">
+              FY2025 Total {formatMoneyCompact(fundingByCategory.total || 0)}
+            </span>
+          </div>
+
+          {Object.keys(fundingByCategory).length > 0 && (
+            <div className="space-y-3">
+              <p className="text-[9px] text-white/40 uppercase tracking-[0.2em] font-mono">
+                Funding by Category
+              </p>
+              <div className="space-y-2">
+                {["WASH", "Health", "Nutrition", "Protection", "Education"].map((category) => {
+                  const value = fundingByCategory[category] || 0;
+                  const total = fundingByCategory.total || 1;
+                  const pct = total > 0 ? (value / total) * 100 : 0;
+                  return (
+                    <div key={category} className="space-y-1">
+                      <div className="flex items-center justify-between text-[9px]">
+                        <p className="font-mono text-white/70">{category}</p>
+                        <p className="font-mono text-cyan-300">
+                          {formatMoneyCompact(value)} ({pct.toFixed(1)}%)
+                        </p>
+                      </div>
+                      <div className="relative h-2 w-full rounded-full overflow-hidden border border-white/10 bg-black/45">
+                        <motion.div
+                          className="absolute left-0 top-0 h-full"
+                          style={{ background: "#22d3ee", boxShadow: "0 0 8px rgba(34,211,238,0.35)" }}
+                          initial={{ width: 0 }}
+                          animate={{ width: `${pct}%` }}
+                          transition={{ type: "spring", stiffness: 220, damping: 26 }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="pt-3 border-t border-white/10">
+            <p className="text-[10px] text-cyan-300/80 font-mono leading-relaxed">
+              No active humanitarian crisis detected in {country}. Showing previous year funding baseline for continued support in key sectors.
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
+
 }
 
 function SectorStatus({ sectors, country }: { sectors: SectorData; country: string }) {

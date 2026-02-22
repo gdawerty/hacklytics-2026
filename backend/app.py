@@ -226,7 +226,7 @@ class HumanitarianSim:
 
     def _system_prompt(self) -> str:
         return (
-            "**Role:** You are the Authentia AI Crisis Solution Architect. Your goal is to transform "
+            "**Role:** You are the Aegis Crisis Solution Architect. Your goal is to transform "
             "humanitarian underfunding data into a predictive, evidence-based recovery roadmap.\n\n"
             "**Logic Framework:**\n"
             "1. **Gap Analysis:** Analyze the provided 'Funding Gap' ($USD) for the specific crisis category.\n"
@@ -949,6 +949,227 @@ def databricks_predict():
             "message": str(exc),
             "type": type(exc).__name__
         }), 500
+
+
+@app.route('/api/detect-crisis', methods=['POST'])
+def detect_crisis():
+    """
+    Detect if a country currently has an active humanitarian crisis using Groq.
+    Expected payload: { "country": "<country name>" }
+    Returns: { "hasCrisis": bool, "articles": [...], "confidence": float }
+    """
+    payload = request.get_json(silent=True) or {}
+    country = payload.get("country", "").strip()
+    
+    if not country:
+        return jsonify({"error": "country is required"}), 400
+    
+    try:
+        # Use Groq to search for recent crisis information
+        system_prompt = (
+            "You are a humanitarian crisis detection expert. Based on knowledge through February 2026, "
+            "determine if a country currently has an active humanitarian crisis. Return ONLY valid JSON."
+        )
+        
+        user_prompt = (
+            f"Does {country} have an active humanitarian crisis as of February 2026? "
+            f"Search your knowledge for recent crises (wars, famines, epidemics, displacement, environmental disasters). "
+            f"If yes, describe the 3 main impacts/articles about the crisis. "
+            f"Return JSON with this structure:\n"
+            f'{{\n'
+            f'  "has_crisis": true/false,\n'
+            f'  "confidence": 0-100,\n'
+            f'  "articles": [\n'
+            f'    {{\n'
+            f'      "title": "<headline>",\n'
+            f'      "summary": "<2 sentence summary>",\n'
+            f'      "source": "Global News",\n'
+            f'      "date": "<YYYY-MM-DD>"\n'
+            f'    }}\n'
+            f'  ]\n'
+            f'}}\n'
+        )
+        
+        result = SIMULATOR._groq_json(system_prompt, user_prompt)
+        has_crisis = result.get("has_crisis", False)
+        articles = result.get("articles", [])
+        confidence = result.get("confidence", 75 if has_crisis else 25)
+        
+        return jsonify({
+            "country": country,
+            "hasCrisis": has_crisis,
+            "confidence": min(100, max(0, confidence)),
+            "articles": articles[:3]  # Limit to 3 articles
+        }), 200
+    except Exception as exc:
+        print(f"[ERROR]  detect_crisis failed for {country}: {exc}")
+        return jsonify({"error": str(exc), "country": country}), 500
+
+
+@app.route('/api/classify-crisis', methods=['POST'])
+def classify_crisis():
+    """
+    Classify crisis articles into one of the 5 humanitarian categories.
+    Expected payload: { "country": "...", "articles": [...] }
+    Returns: { "primary_category": "WASH|Health|Nutrition|Protection|Education", "confidence": float }
+    """
+    payload = request.get_json(silent=True) or {}
+    country = payload.get("country", "").strip()
+    articles = payload.get("articles", [])
+    
+    if not country or not articles:
+        return jsonify({"error": "country and articles are required"}), 400
+    
+    try:
+        # Combine article text
+        article_text = "\n\n".join([
+            f"{a.get('title', '')}: {a.get('summary', '')}" 
+            for a in articles[:3]
+        ])
+        
+        system_prompt = (
+            "You are a humanitarian crisis classification expert. Analyze crisis descriptions and classify them "
+            "into ONE of these categories: WASH (water/sanitation), Health (medical/disease), "
+            "Nutrition (food/hunger), Protection (violence/displacement), Education (schooling access). "
+            "Return ONLY valid JSON."
+        )
+        
+        user_prompt = (
+            f"For {country}, classifying this crisis:\n\n{article_text}\n\n"
+            f"Identify the PRIMARY humanitarian crisis category. Return JSON:\n"
+            f'{{\n'
+            f'  "primary_category": "<WASH|Health|Nutrition|Protection|Education>",\n'
+            f'  "confidence": 0-100,\n'
+            f'  "secondary_categories": ["<category>", ...],\n'
+            f'  "reasoning": "<brief explanation>"\n'
+            f'}}\n'
+        )
+        
+        result = SIMULATOR._groq_json(system_prompt, user_prompt)
+        primary_category = result.get("primary_category", "Health").strip()
+        
+        # Validate category
+        valid_categories = ["WASH", "Health", "Nutrition", "Protection", "Education"]
+        if primary_category not in valid_categories:
+            for valid_cat in valid_categories:
+                if valid_cat.lower() in primary_category.lower():
+                    primary_category = valid_cat
+                    break
+            else:
+                primary_category = "Health"
+        
+        confidence = min(100, max(0, result.get("confidence", 75)))
+        
+        return jsonify({
+            "country": country,
+            "primary_category": primary_category,
+            "confidence": confidence,
+            "secondary_categories": result.get("secondary_categories", [])
+        }), 200
+    except Exception as exc:
+        print(f"[ERROR] classify_crisis failed for {country}: {exc}")
+        return jsonify({"error": str(exc), "country": country}), 500
+
+
+@app.route('/api/previous-year-funding', methods=['POST'])
+def previous_year_funding():
+    """
+    Query Databricks for previous year funding received per category.
+    Expected payload: { "country": "<country name>" }
+    Returns: { "WASH": number, "Health": number, ..., "total": number, "year": number }
+    """
+    payload = request.get_json(silent=True) or {}
+    country = payload.get("country", "").strip()
+    
+    if not country:
+        return jsonify({"error": "country is required"}), 400
+    
+    try:
+        current_year = 2026
+        previous_year = current_year - 1  # 2025
+        categories = ["WASH", "Health", "Nutrition", "Protection", "Education"]
+        
+        funding_by_category = {}
+        
+        # Query Databricks for each category to get total_sum (funding received)
+        try:
+            import requests
+            HAS_REQUESTS = True
+        except ImportError:
+            HAS_REQUESTS = False
+        
+        databricks_token = os.getenv("DATABRICKS_TOKEN")
+        databricks_endpoint = os.getenv("DATABRICKS_ENDPOINT")
+        
+        if not (HAS_REQUESTS and databricks_token and databricks_endpoint):
+            # Return fallback data if Databricks is not available
+            print(f"[WARNING] Databricks not available for {country}, using fallback funding data")
+            fallback_funding = {
+                "WASH": 450_000_000,
+                "Health": 550_000_000,
+                "Nutrition": 320_000_000,
+                "Protection": 280_000_000,
+                "Education": 240_000_000,
+                "total": 1_840_000_000,
+                "year": previous_year
+            }
+            return jsonify({**fallback_funding, "country": country}), 200
+        
+        # Query Databricks for each category
+        headers = {
+            "Authorization": f"Bearer {databricks_token}",
+            "Content-Type": "application/json"
+        }
+        
+        for category in categories:
+            try:
+                payload_db = {
+                    "dataframe_records": [{
+                        "country": country,
+                        "category": category,
+                        "year": previous_year
+                    }]
+                }
+                
+                response = requests.post(
+                    databricks_endpoint,
+                    json=payload_db,
+                    headers=headers,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    # Extract total_sum from predictions
+                    if "predictions" in result and result["predictions"]:
+                        pred = result["predictions"][0]
+                        total_sum = pred.get("total_sum", 0)
+                    else:
+                        total_sum = result.get("total_sum", 0)
+                    
+                    funding_by_category[category] = float(total_sum)
+                else:
+                    # Use fallback per category if query fails
+                    funding_by_category[category] = 350_000_000 / len(categories)
+            except Exception as e:
+                print(f"[WARNING] Failed to fetch funding for {country} - {category}: {e}")
+                funding_by_category[category] = 350_000_000 / len(categories)
+        
+        total_funding = sum(funding_by_category.values())
+        
+        return jsonify({
+            "country": country,
+            "year": previous_year,
+            "WASH": funding_by_category.get("WASH", 0),
+            "Health": funding_by_category.get("Health", 0),
+            "Nutrition": funding_by_category.get("Nutrition", 0),
+            "Protection": funding_by_category.get("Protection", 0),
+            "Education": funding_by_category.get("Education", 0),
+            "total": total_funding
+        }), 200
+    except Exception as exc:
+        print(f"[ERROR] previous_year_funding failed for {country}: {exc}")
+        return jsonify({"error": str(exc), "country": country}), 500
 
 
 @app.route('/api/solutions/simulate', methods=['POST'])
