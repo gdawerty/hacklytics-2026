@@ -254,22 +254,41 @@ async function fetchDossier(country: string, state?: string): Promise<DossierDat
 async function fetchDatabricksPrediction(country: string): Promise<any> {
   console.log('[FRONTEND] [Databricks] Starting prediction request for country:', country);
   
-  const currentYear = new Date().getFullYear();
-  const payload = {
-    dataframe_records: [
-      {
-        country: country,
-        category: "Food Security",
-        year: currentYear
-      }
-    ]
-  };
-
-  console.log('[FRONTEND] [Databricks] Request payload:', JSON.stringify(payload, null, 2));
-  console.log('[FRONTEND] [Databricks] Backend URL:', BACKEND_URL);
-  console.log('[FRONTEND] [Databricks] Calling backend proxy endpoint...');
-
   try {
+    // Step 1: Identify the humanitarian category for this country using Groq AI
+    console.log('[FRONTEND] [Category Identification] Calling backend to identify category for:', country);
+    const categoryRes = await fetch(`${BACKEND_URL}/api/identify-category`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ country }),
+    });
+
+    if (!categoryRes.ok) {
+      throw new Error(`Failed to identify category: ${categoryRes.status}`);
+    }
+
+    const categoryData = await categoryRes.json();
+    const category = categoryData.category || "Health";
+    console.log('[FRONTEND] [Category Identification] Identified category:', category);
+
+    // Step 2: Use the identified category in the Databricks prediction request
+    const currentYear = new Date().getFullYear();
+    const payload = {
+      dataframe_records: [
+        {
+          country: country,
+          category: category,
+          year: currentYear
+        }
+      ]
+    };
+
+    console.log('[FRONTEND] [Databricks] Request payload:', JSON.stringify(payload, null, 2));
+    console.log('[FRONTEND] [Databricks] Backend URL:', BACKEND_URL);
+    console.log('[FRONTEND] [Databricks] Calling backend proxy endpoint...');
+
     const startTime = Date.now();
     const res = await fetch(`${BACKEND_URL}/api/databricks/predict`, {
       method: 'POST',
@@ -932,6 +951,72 @@ function IntelligenceCard({ article, index }: { article: Article; index: number 
   );
 }
 
+// ─── Fetch all category predictions from backend ─────────────────────────
+async function fetchAllCategoryPredictions(country: string): Promise<{categoryResults: Record<string, number>; underfundingPct: number}> {
+  const categories = ["WASH", "Health", "Nutrition", "Protection", "Education"];
+  const categoryResults: Record<string, number> = {};
+  const currentYear = new Date().getFullYear();
+
+  console.log('[FRONTEND] [Categories] Starting prediction fetch for all 5 categories:', country);
+
+  try {
+    // Fetch predictions for all 5 categories in parallel
+    const promises = categories.map(async (category) => {
+      const payload = {
+        dataframe_records: [
+          {
+            country: country,
+            category: category,
+            year: currentYear
+          }
+        ]
+      };
+
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/databricks/predict`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+          console.warn(`[FRONTEND] [Categories] Failed to fetch ${category}: ${res.status}`);
+          return { category, value: 0 };
+        }
+
+        const result = await res.json();
+        // Extract a numeric value from the response (adjust based on actual response structure)
+        // For now, assuming it returns a funding prediction or percentage
+        const value = result.predicted_underfunding || result.underfunding_percentage || 0;
+        console.log(`[FRONTEND] [Categories] ${category} result:`, value);
+        return { category, value: parseFloat(value) || 0 };
+      } catch (error) {
+        console.error(`[FRONTEND] [Categories] Error fetching ${category}:`, error);
+        return { category, value: 0 };
+      }
+    });
+
+    const results = await Promise.all(promises);
+    results.forEach(({ category, value }) => {
+      categoryResults[category] = value;
+    });
+
+    // Calculate average underfunding percentage (sum of all categories divided by 5)
+    const totalUnderfunding = Object.values(categoryResults).reduce((a, b) => a + b, 0);
+    const underfundingPct = totalUnderfunding / categories.length;
+
+    console.log('[FRONTEND] [Categories] All results:', categoryResults);
+    console.log('[FRONTEND] [Categories] Average underfunding:', underfundingPct);
+
+    return { categoryResults, underfundingPct };
+  } catch (error) {
+    console.error('[FRONTEND] [Categories] Failed to fetch all categories:', error);
+    return { categoryResults: {}, underfundingPct: 0 };
+  }
+}
+
 // ─── AID TAB ───────────────────────────────────────────────────────────────
 function ContextExplain({
   country, kind, target,
@@ -974,11 +1059,94 @@ function ContextExplain({
 }
 
 function FundingBeastModule({ country, state }: { country: string; state?: string }) {
-  const mitigation = useMemo(() => buildMitigationMock(country, state), [country, state]);
+  const [mitigation, setMitigation] = useState<MitigationFundingData | null>(null);
+  const [categoryLoading, setCategoryLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCategoryLoading(true);
+
+    const fetchAndBuildMitigation = async () => {
+      try {
+        // Fetch predictions for all 5 categories
+        const { categoryResults, underfundingPct } = await fetchAllCategoryPredictions(country);
+
+        if (cancelled) return;
+
+        // Build mitigation data using the fetched category predictions
+        const seed = hashSeed(`${country}::${state ?? "country"}`);
+        const totalGoal = 2_000_000_000 + (seed % 9) * 100_000_000; // 2.0B - 2.8B
+        
+        // Use underfunding percentage from categories to calculate current funding
+        const currentFundingRatio = Math.max(0.35, Math.min(0.9, 1 - (underfundingPct / 100)));
+        const currentFunding = Math.round(totalGoal * currentFundingRatio);
+
+        const templates: Array<{
+          name: MitigationCategory["name"];
+          needRatio: number;
+          recvRatio: number;
+          impactScore: number;
+          originPlan: string;
+        }> = [
+          { name: "WASH",       needRatio: 0.26, recvRatio: 0.43, impactScore: 82, originPlan: "UN OCHA" },
+          { name: "Health",     needRatio: 0.24, recvRatio: 0.48, impactScore: 88, originPlan: "WHO" },
+          { name: "Nutrition",  needRatio: 0.18, recvRatio: 0.39, impactScore: 79, originPlan: "UNICEF" },
+          { name: "Protection", needRatio: 0.16, recvRatio: 0.34, impactScore: 84, originPlan: "Red Cross" },
+          { name: "Education",  needRatio: 0.16, recvRatio: 0.37, impactScore: 73, originPlan: "Save the Children" },
+        ];
+
+        const categories = templates.map((t) => {
+          // Get the category-specific underfunding prediction
+          const categoryUnderfunding = categoryResults[t.name] || underfundingPct;
+          const needAmount = Math.round(totalGoal * Math.max(0.1, t.needRatio + (categoryUnderfunding / 1000)));
+          const receivedAmount = Math.round(needAmount * Math.max(0.14, Math.min(0.88, t.recvRatio)));
+          const gapRatio = Math.max(0, (needAmount - receivedAmount) / Math.max(needAmount, 1));
+          const successIfFunded = Math.round(Math.min(96, t.impactScore + gapRatio * 14));
+
+          console.log(`[FRONTEND] [FundingBeast] ${t.name}: prediction=${categoryUnderfunding}, need=${needAmount}`);
+
+          return {
+            name: t.name,
+            needAmount,
+            receivedAmount,
+            impactScore: t.impactScore,
+            originPlan: t.originPlan,
+            successIfFunded,
+          } satisfies MitigationCategory;
+        });
+
+        const result: MitigationFundingData = {
+          totalGoal,
+          currentFunding,
+          categories,
+        };
+
+        if (!cancelled) {
+          setMitigation(result);
+        }
+      } catch (error) {
+        console.error('[FRONTEND] [FundingBeast] Error building mitigation data:', error);
+        // Fallback to mock data
+        if (!cancelled) {
+          setMitigation(buildMitigationMock(country, state));
+        }
+      } finally {
+        if (!cancelled) {
+          setCategoryLoading(false);
+        }
+      }
+    };
+
+    fetchAndBuildMitigation();
+    return () => { cancelled = true; };
+  }, [country, state]);
+
+  // Use fetched data or fallback to mock
+  const currentMitigation = mitigation ?? buildMitigationMock(country, state);
   const animKey = `${country}::${state ?? "country"}`;
 
-  const totalGoal = mitigation.totalGoal;
-  const currentFunding = Math.min(mitigation.currentFunding, totalGoal);
+  const totalGoal = currentMitigation.totalGoal;
+  const currentFunding = Math.min(currentMitigation.currentFunding, totalGoal);
   const predictedNeeded = Math.max(0, totalGoal - currentFunding);
 
   const receivedPct = Math.max(0, Math.min(100, (currentFunding / Math.max(totalGoal, 1)) * 100));
@@ -987,7 +1155,7 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
   const shownReceived = useCountUp(currentFunding, `${animKey}-received`);
   const shownPredicted = useCountUp(predictedNeeded, `${animKey}-predicted`);
 
-  const ranked = mitigation.categories
+  const ranked = currentMitigation.categories
     .map(cat => {
       const fundingGap = Math.max(0, cat.needAmount - cat.receivedAmount);
       const gapRatio = fundingGap / Math.max(cat.needAmount, 1);
@@ -1000,7 +1168,7 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
     <div className="rounded-xl border border-white/10 bg-slate-950/40 backdrop-blur-xl p-4 space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-[9px] text-white/30 uppercase tracking-[0.2em] font-mono font-semibold">
-          Crisis Mitigation &amp; Solutions
+          Crisis Mitigation &amp; Solutions {categoryLoading && <span className="text-cyan-400 animate-pulse">●</span>}
         </p>
         <span className="text-[9px] font-mono text-white/35">Goal {formatMoneyCompact(totalGoal)}</span>
       </div>

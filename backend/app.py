@@ -373,6 +373,51 @@ class HumanitarianSim:
             "package_success_score": round(package_success, 2),
         }
 
+    def identify_humanitarian_category(self, country: str) -> str:
+        """
+        Use Groq AI to identify the primary humanitarian crisis category for a country.
+        Returns one of: WASH, Health, Nutrition, Protection, Education
+        """
+        valid_categories = ["WASH", "Health", "Nutrition", "Protection", "Education"]
+        
+        system_prompt = (
+            "You are a humanitarian crisis analyst. Analyze the given country and identify "
+            "its primary humanitarian crisis category from these options: WASH (water/sanitation), "
+            "Health (medical/disease), Nutrition (food/hunger), Protection (violence/displacement), "
+            "Education (access to schooling). Return ONLY valid JSON."
+        )
+        
+        user_prompt = (
+            f"For {country} as of February 2026, identify the primary humanitarian crisis category. "
+            f"Return JSON with exactly this structure:\n"
+            f'{{\n'
+            f'  "country": "{country}",\n'
+            f'  "category": "<one of: WASH, Health, Nutrition, Protection, Education>",\n'
+            f'  "reasoning": "<brief explanation of why this is the primary crisis>"\n'
+            f'}}\n\n'
+            f'Valid categories: {", ".join(valid_categories)}'
+        )
+        
+        try:
+            result = self._groq_json(system_prompt, user_prompt)
+            category = result.get("category", "Health").strip()
+            
+            # Ensure it's one of the valid categories
+            if category not in valid_categories:
+                # Try to find a partial match
+                for valid_cat in valid_categories:
+                    if valid_cat.lower() in category.lower() or category.lower() in valid_cat.lower():
+                        category = valid_cat
+                        break
+                else:
+                    # Default to Health if no match found
+                    category = "Health"
+            
+            return category
+        except Exception as e:
+            print(f"[ERROR] identify_humanitarian_category failed for {country}: {e}")
+            return "Health"  # Default fallback
+
     def generate_final_report(self, country: str, year: int, category: Optional[str] = None,
                               funding_gap_usd: Optional[float] = None, people_in_need: Optional[int] = None,
                               stability_index: Optional[float] = None) -> Dict[str, Any]:
@@ -617,6 +662,32 @@ def news_search():
 
     results = _fetch_live_news(country, crisis, limit=limit)
     return jsonify({"articles": results, "count": len(results)}), 200
+
+
+@app.route('/api/identify-category', methods=['POST'])
+def identify_category():
+    """
+    Identify the primary humanitarian crisis category for a given country using Groq AI.
+    Expected payload:
+    {
+        "country": "<country name>"
+    }
+    """
+    payload = request.get_json(silent=True) or {}
+    country = payload.get("country")
+    
+    if not country:
+        return jsonify({"error": "country is required"}), 400
+    
+    try:
+        category = SIMULATOR.identify_humanitarian_category(country)
+        return jsonify({
+            "country": country,
+            "category": category
+        }), 200
+    except Exception as exc:
+        print(f"[ERROR] identify_category failed: {exc}")
+        return jsonify({"error": str(exc), "country": country}), 500
 
 
 @app.route('/api/databricks/predict', methods=['POST'])
