@@ -226,7 +226,7 @@ class HumanitarianSim:
 
     def _system_prompt(self) -> str:
         return (
-            "**Role:** You are the Authentia AI Crisis Solution Architect. Your goal is to transform "
+            "**Role:** You are the Humanitarian AI Crisis Solution Architect. Your goal is to transform "
             "humanitarian underfunding data into a predictive, evidence-based recovery roadmap.\n\n"
             "**Logic Framework:**\n"
             "1. **Gap Analysis:** Analyze the provided 'Funding Gap' ($USD) for the specific crisis category.\n"
