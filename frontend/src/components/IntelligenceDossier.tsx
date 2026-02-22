@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LineChart, Line, XAxis, Tooltip,
@@ -59,6 +59,21 @@ interface DossierData {
   articles:    Article[];
   social:      SocialPost[];
   aidOrgs:     AidOrg[];
+}
+
+interface MitigationCategory {
+  name: "WASH" | "Health" | "Nutrition" | "Protection" | "Education";
+  needAmount: number;
+  receivedAmount: number;
+  impactScore: number;
+  originPlan: string;
+  successIfFunded: number;
+}
+
+interface MitigationFundingData {
+  totalGoal: number;
+  currentFunding: number;
+  categories: MitigationCategory[];
 }
 
 export interface DossierProps {
@@ -249,6 +264,74 @@ function crisisLevel(i: number) {
   if (i > 0.49) return { label: "High",     cls: "bg-orange-500/15 text-orange-300 border-orange-500/25" };
   if (i > 0.24) return { label: "Moderate", cls: "bg-yellow-500/15 text-yellow-300 border-yellow-500/25" };
   return               { label: "Low",      cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/25" };
+}
+
+function hashSeed(input: string): number {
+  let h = 0;
+  for (let i = 0; i < input.length; i += 1) h = (h * 31 + input.charCodeAt(i)) >>> 0;
+  return h || 1;
+}
+
+function buildMitigationMock(country: string, state?: string): MitigationFundingData {
+  const seed = hashSeed(`${country}::${state ?? "country"}`);
+  const totalGoal = 2_000_000_000 + (seed % 9) * 100_000_000; // 2.0B - 2.8B
+  const currentFunding = Math.round(totalGoal * (0.36 + ((seed >> 3) % 22) / 100)); // 36% - 57%
+
+  const templates: Array<{
+    name: MitigationCategory["name"];
+    needRatio: number;
+    recvRatio: number;
+    impactScore: number;
+    originPlan: string;
+  }> = [
+    { name: "WASH",       needRatio: 0.26, recvRatio: 0.43, impactScore: 82, originPlan: "UN OCHA" },
+    { name: "Health",     needRatio: 0.24, recvRatio: 0.48, impactScore: 88, originPlan: "WHO" },
+    { name: "Nutrition",  needRatio: 0.18, recvRatio: 0.39, impactScore: 79, originPlan: "UNICEF" },
+    { name: "Protection", needRatio: 0.16, recvRatio: 0.34, impactScore: 84, originPlan: "Red Cross" },
+    { name: "Education",  needRatio: 0.16, recvRatio: 0.37, impactScore: 73, originPlan: "Save the Children" },
+  ];
+
+  const categories = templates.map((t, i) => {
+    const jitter = (((seed >> (i + 1)) % 9) - 4) / 100;
+    const needAmount = Math.round(totalGoal * Math.max(0.1, t.needRatio + jitter));
+    const receivedAmount = Math.round(needAmount * Math.max(0.14, Math.min(0.88, t.recvRatio + jitter * 0.7)));
+    const gapRatio = Math.max(0, (needAmount - receivedAmount) / Math.max(needAmount, 1));
+    const successIfFunded = Math.round(Math.min(96, t.impactScore + gapRatio * 14));
+    return {
+      name: t.name,
+      needAmount,
+      receivedAmount,
+      impactScore: t.impactScore,
+      originPlan: t.originPlan,
+      successIfFunded,
+    } satisfies MitigationCategory;
+  });
+
+  return { totalGoal, currentFunding, categories };
+}
+
+function formatMoneyCompact(value: number): string {
+  if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(1)}B`;
+  if (value >= 1_000_000) return `$${Math.round(value / 1_000_000)}M`;
+  return `$${Math.round(value / 1_000)}K`;
+}
+
+function useCountUp(target: number, depsKey: string, duration = 900) {
+  const [value, setValue] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const start = performance.now();
+    const from = 0;
+    const run = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      setValue(Math.round(from + (target - from) * eased));
+      if (t < 1) raf = requestAnimationFrame(run);
+    };
+    raf = requestAnimationFrame(run);
+    return () => cancelAnimationFrame(raf);
+  }, [target, depsKey, duration]);
+  return value;
 }
 
 // ─── Reveal wrapper — spring "pop" ─────────────────────────────────────────
@@ -501,6 +584,115 @@ function IntelligenceCard({ article, index }: { article: Article; index: number 
 }
 
 // ─── AID TAB ───────────────────────────────────────────────────────────────
+function FundingBeastModule({ country, state }: { country: string; state?: string }) {
+  const mitigation = useMemo(() => buildMitigationMock(country, state), [country, state]);
+  const animKey = `${country}::${state ?? "country"}`;
+
+  const totalGoal = mitigation.totalGoal;
+  const currentFunding = Math.min(mitigation.currentFunding, totalGoal);
+  const predictedNeeded = Math.max(0, totalGoal - currentFunding);
+
+  const receivedPct = Math.max(0, Math.min(100, (currentFunding / Math.max(totalGoal, 1)) * 100));
+  const predictedPct = Math.max(0, Math.min(100 - receivedPct, (predictedNeeded / Math.max(totalGoal, 1)) * 100));
+
+  const shownReceived = useCountUp(currentFunding, `${animKey}-received`);
+  const shownPredicted = useCountUp(predictedNeeded, `${animKey}-predicted`);
+
+  const ranked = mitigation.categories
+    .map(cat => {
+      const fundingGap = Math.max(0, cat.needAmount - cat.receivedAmount);
+      const gapRatio = fundingGap / Math.max(cat.needAmount, 1);
+      return { ...cat, fundingGap, gapRatio };
+    })
+    .sort((a, b) => b.fundingGap - a.fundingGap)
+    .slice(0, 3);
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-slate-950/40 backdrop-blur-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[9px] text-white/30 uppercase tracking-[0.2em] font-mono font-semibold">
+          Crisis Mitigation &amp; Solutions
+        </p>
+        <span className="text-[9px] font-mono text-white/35">Goal {formatMoneyCompact(totalGoal)}</span>
+      </div>
+
+      <div className="space-y-2">
+        <div className="relative h-3 w-full rounded-full overflow-hidden border border-white/10 bg-black/45">
+          <motion.div
+            className="absolute left-0 top-0 h-full"
+            style={{ background: "#22d3ee", boxShadow: "0 0 10px rgba(34,211,238,0.45)" }}
+            initial={{ width: 0 }}
+            animate={{ width: `${receivedPct}%` }}
+            transition={{ type: "spring", stiffness: 220, damping: 26 }}
+          />
+          <motion.div
+            className="absolute top-0 h-full"
+            style={{
+              left: `${receivedPct}%`,
+              background:
+                "repeating-linear-gradient(135deg, rgba(239,68,68,0.92) 0, rgba(239,68,68,0.92) 5px, rgba(239,68,68,0.58) 5px, rgba(239,68,68,0.58) 10px)",
+            }}
+            initial={{ width: 0, opacity: 0.5 }}
+            animate={{ width: `${predictedPct}%`, opacity: [0.45, 0.95, 0.45] }}
+            transition={{
+              width: { type: "spring", stiffness: 210, damping: 24 },
+              opacity: { repeat: Infinity, duration: 1.4, ease: "easeInOut" },
+            }}
+          />
+          <div
+            className="absolute right-0 top-[-2px] h-[18px] w-[2px] bg-white/80"
+            style={{ boxShadow: "0 0 8px rgba(255,255,255,0.65)" }}
+          />
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 text-[9px] font-mono uppercase tracking-wider">
+          <div>
+            <p className="text-cyan-300/85">Received</p>
+            <p className="text-white/85 text-[11px] normal-case">{formatMoneyCompact(shownReceived)}</p>
+          </div>
+          <div>
+            <p className="text-red-400/85">Predicted Need</p>
+            <p className="text-white/85 text-[11px] normal-case">{formatMoneyCompact(shownPredicted)}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-white/45">Funding Gap</p>
+            <p className="text-white text-[11px] normal-case">{Math.round((predictedNeeded / Math.max(totalGoal, 1)) * 100)}%</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="pt-1 border-t border-white/10 space-y-2">
+        <p className="text-[9px] text-white/30 uppercase tracking-[0.2em] font-mono font-semibold">
+          Top Underfunded Sectors
+        </p>
+        {ranked.map((sector, idx) => (
+          <div
+            key={sector.name}
+            className="rounded-lg border border-white/10 bg-black/30 px-3 py-2"
+            style={{
+              boxShadow: idx === 0 ? "0 0 0 1px rgba(239,68,68,0.35) inset" : "none",
+            }}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-[11px] font-mono font-bold text-white">{sector.name}</p>
+                <p className="text-[9px] font-mono text-white/35">Origin of Plan · {sector.originPlan}</p>
+              </div>
+              <span className="text-[10px] font-mono font-bold text-red-400">
+                {formatMoneyCompact(sector.fundingGap)} gap
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between text-[9px] font-mono">
+              <span className="text-white/40">Likelihood of Success</span>
+              <span className="text-cyan-300 font-bold">{sector.successIfFunded}% if filled</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SectorStatus({ sectors }: { sectors: SectorData }) {
   const items = [
     { key: "food",   abbr: "FOOD", d: sectors.food   },
@@ -859,9 +1051,12 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
               {activeTab === "aid" && (
                 <>
                   <Reveal delay={0.0}>
+                    <FundingBeastModule country={country} state={state} />
+                  </Reveal>
+                  <Reveal delay={0.08}>
                     <SectorStatus sectors={data.sectors} />
                   </Reveal>
-                  <Reveal delay={0.1}>
+                  <Reveal delay={0.14}>
                     <div className="flex items-center gap-2 pt-1 border-t border-white/[0.05]">
                       <div className="w-1.5 h-1.5 rounded-full" style={{ background: "rgba(34,211,238,0.5)" }} />
                       <p className="text-[9px] text-white/22 uppercase tracking-[0.2em] font-mono font-semibold">AID ORGANIZATIONS</p>

@@ -1,7 +1,12 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import random
 import time
+import json
+import os
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
 
 try:
     import h3
@@ -15,6 +20,12 @@ try:
     H3_AVAILABLE = True
 except ImportError:
     H3_AVAILABLE = False
+
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
 
 app = Flask(__name__)
 CORS(app)
@@ -114,6 +125,313 @@ CRISIS_ZONE_DEFS = [
         "funding": 200,  "required": 880,  "pop": 9_800_000,  "radius": 2,
     },
 ]
+
+
+CRISIS_TYPE_BY_COUNTRY = {
+    "Eastern DRC": "Protection",
+    "Yemen": "Food & Livelihoods",
+    "Syria": "Protection",
+    "Afghanistan": "Food & Livelihoods",
+    "Ethiopia": "Nutrition",
+    "Haiti": "WASH",
+    "Venezuela": "Health",
+    "Ukraine": "Protection",
+    "Sudan": "Food & Livelihoods",
+    "Myanmar": "Protection",
+    "South Sudan": "Food & Livelihoods",
+    "Gaza": "Protection",
+    "Somalia": "WASH",
+    "Mozambique": "WASH",
+    "Nigeria (NE)": "Nutrition",
+}
+
+STABILITY_BY_REGION = {
+    "Sub-Saharan Africa": 0.58,
+    "Middle East": 0.52,
+    "South Asia": 0.55,
+    "East Africa": 0.56,
+    "Caribbean": 0.66,
+    "South America": 0.64,
+    "Eastern Europe": 0.72,
+    "Northeast Africa": 0.54,
+    "Southeast Asia": 0.63,
+    "Southern Africa": 0.69,
+    "West Africa": 0.59,
+}
+
+SOLUTIONS_DATABASE = [
+    {"Name": "Cash Transfers in Lebanon", "Cost": 180_000_000, "Success_Rate_Percentage": 74, "Primary_Crisis_Type": "Food & Livelihoods"},
+    {"Name": "Borehole Drilling in Somalia", "Cost": 120_000_000, "Success_Rate_Percentage": 71, "Primary_Crisis_Type": "WASH"},
+    {"Name": "Mobile Health Clinics in Yemen", "Cost": 150_000_000, "Success_Rate_Percentage": 69, "Primary_Crisis_Type": "Health"},
+    {"Name": "School Continuity Grants in Syria", "Cost": 90_000_000, "Success_Rate_Percentage": 67, "Primary_Crisis_Type": "Education"},
+    {"Name": "Nutrition Vouchers in Ethiopia", "Cost": 110_000_000, "Success_Rate_Percentage": 73, "Primary_Crisis_Type": "Nutrition"},
+    {"Name": "Protection Case Management in Jordan", "Cost": 95_000_000, "Success_Rate_Percentage": 76, "Primary_Crisis_Type": "Protection"},
+    {"Name": "Community WASH Rehab in Mozambique", "Cost": 105_000_000, "Success_Rate_Percentage": 70, "Primary_Crisis_Type": "WASH"},
+    {"Name": "Targeted Food Baskets in Sudan", "Cost": 130_000_000, "Success_Rate_Percentage": 68, "Primary_Crisis_Type": "Food & Livelihoods"},
+]
+
+
+def _build_needs_df() -> pd.DataFrame:
+    rows = []
+    for zone in CRISIS_ZONE_DEFS:
+        rows.append({
+            "Year": 2026,
+            "Country": zone["name"],
+            "Crisis_Type": CRISIS_TYPE_BY_COUNTRY.get(zone["name"], "Food & Livelihoods"),
+            "Funding_Required": float(zone["required"]) * 1_000_000.0,
+            "Funding_Received": float(zone["funding"]) * 1_000_000.0,
+            "People_in_Need": int(zone["pop"]),
+            "Stability_Index": float(STABILITY_BY_REGION.get(zone["region"], 0.62)),
+        })
+    return pd.DataFrame(rows)
+
+
+class HumanitarianSim:
+    def __init__(
+        self,
+        df_needs: pd.DataFrame,
+        solutions_database: List[Dict[str, Any]],
+        api_key: Optional[str] = None,
+        model: str = "llama-3.3-70b-versatile",
+    ):
+        self.df_needs = df_needs.copy()
+        self.solutions_database = solutions_database
+        self.model = model
+        self.api_key = api_key or os.getenv("GROQ_API_KEY")
+        self.client = Groq(api_key=self.api_key) if GROQ_AVAILABLE and self.api_key else None
+
+    @staticmethod
+    def _parse_percent(text_or_num: Any) -> float:
+        if isinstance(text_or_num, (int, float)):
+            return float(text_or_num)
+        if not text_or_num:
+            return 0.0
+        raw = str(text_or_num).replace("%", "").strip()
+        try:
+            return float(raw)
+        except ValueError:
+            return 0.0
+
+    def _system_prompt(self) -> str:
+        return (
+            "**Role:** You are the Authentia AI Crisis Solution Architect. Your goal is to transform "
+            "humanitarian underfunding data into a predictive, evidence-based recovery roadmap.\n\n"
+            "**Logic Framework:**\n"
+            "1. **Gap Analysis:** Analyze the provided 'Funding Gap' ($USD) for the specific crisis category.\n"
+            "2. **Analogous Retrieval:** Identify historical humanitarian interventions in other nations "
+            "(e.g., Lebanon, Yemen, Somalia) that faced identical crisis markers.\n"
+            "3. **Hypothetical Allocation:** Assuming the 'Funding Gap' is now 100% filled, distribute that "
+            "money across 3-4 specific solutions.\n"
+            "4. **Success Prediction:** Calculate a 'Likelihood of Success' (0-100%) for each solution based on:\n"
+            "   - Historical efficacy of the intervention.\n"
+            "   - Funding-to-Need ratio.\n"
+            "   - Local Absorption Capacity (Stability Index).\n\n"
+            "**Constraints:**\n"
+            "- You must output in valid JSON format.\n"
+            "- You must include a \"Reasoning\" field explaining why a specific country was chosen as an analogy."
+        )
+
+    def _user_prompt(
+        self,
+        country: str,
+        category: str,
+        year: int,
+        funding_gap_usd: float,
+        people_in_need: int,
+        stability_index: float,
+    ) -> str:
+        return (
+            "### INPUT DATA\n"
+            f"- **Country:** {country}\n"
+            f"- **Primary Crisis:** {category}\n"
+            f"- **Year:** {year}\n"
+            f"- **Current Funding Gap:** ${funding_gap_usd:,.0f}\n"
+            f"- **Affected Population:** {people_in_need}\n"
+            f"- **Stability Index:** {stability_index}\n\n"
+            "### INSTRUCTIONS\n"
+            f"1. Based on the ${funding_gap_usd:,.0f} shortfall, identify 3 high-impact solutions solved in "
+            "other nations with similar socio-economic profiles.\n"
+            f"2. If we provide the full ${funding_gap_usd:,.0f} today, allocate a percentage (%) to each solution.\n"
+            "3. Calculate the 'Likelihood of Success' and 'Projected Impact' (number of people moved out of "
+            "'In Need' status).\n\n"
+            "### RESPONSE FORMAT\n"
+            "Return a JSON object with this structure:\n"
+            "{\n"
+            "  \"summary\": \"...\",\n"
+            "  \"Reasoning\": \"...\",\n"
+            "  \"proposed_solutions\": [\n"
+            "    {\n"
+            "      \"solution_name\": \"...\",\n"
+            "      \"analogous_country\": \"...\",\n"
+            "      \"allocation_percentage\": 0,\n"
+            "      \"allocated_amount\": 0,\n"
+            "      \"success_likelihood\": \"0%\",\n"
+            "      \"projected_impact_count\": 0,\n"
+            "      \"rationale\": \"...\"\n"
+            "    }\n"
+            "  ],\n"
+            "  \"overall_impact_score\": 0\n"
+            "}"
+        )
+
+    def get_underfunding_metrics(self, country: str, year: int) -> Dict[str, Any]:
+        row = self.df_needs[(self.df_needs["Country"] == country) & (self.df_needs["Year"] == year)]
+        if row.empty:
+            # fallback for current dashboard where year may not be explicitly stored
+            row = self.df_needs[self.df_needs["Country"] == country]
+        if row.empty:
+            raise ValueError(f"No needs data found for country={country}, year={year}")
+
+        r = row.iloc[0]
+        funding_required = float(r["Funding_Required"])
+        funding_received = float(r["Funding_Received"])
+        gap = max(funding_required - funding_received, 0.0)
+        underfund_pct = (gap / funding_required * 100.0) if funding_required > 0 else 0.0
+        return {
+            "Country": str(r["Country"]),
+            "Year": int(year),
+            "Category": str(r["Crisis_Type"]),
+            "Funding_Gap_USD": gap,
+            "Funding_Required": funding_required,
+            "Funding_Received": funding_received,
+            "Underfunding_Percentage": underfund_pct,
+            "People_in_Need": int(r.get("People_in_Need", 0)),
+            "Stability_Index": float(r.get("Stability_Index", 0.62)),
+        }
+
+    def _groq_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+        if not self.client:
+            raise RuntimeError("Groq client unavailable. Set GROQ_API_KEY and install groq.")
+        completion = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        return json.loads(completion.choices[0].message.content)
+
+    def fetch_analogous_solutions(
+        self, country: str, category: str, year: int, funding_gap_usd: float, people_in_need: int, stability_index: float
+    ) -> Dict[str, Any]:
+        return self._groq_json(
+            self._system_prompt(),
+            self._user_prompt(country, category, year, funding_gap_usd, people_in_need, stability_index),
+        )
+
+    def allocate_and_predict(self, metrics: Dict[str, Any], llm_result: Dict[str, Any]) -> Dict[str, Any]:
+        solutions = llm_result.get("proposed_solutions", []) or []
+        if not solutions:
+            return {"proposed_solutions": [], "package_success_score": 0.0}
+
+        # Normalize/repair allocations if LLM does not sum to 100.
+        alloc_values = [float(s.get("allocation_percentage", 0) or 0) for s in solutions]
+        alloc_sum = sum(alloc_values)
+        if alloc_sum <= 0:
+            alloc_values = [100.0 / len(solutions)] * len(solutions)
+            alloc_sum = 100.0
+        norm_weights = [a / alloc_sum for a in alloc_values]
+
+        gap = float(metrics["Funding_Gap_USD"])
+        stability = float(metrics["Stability_Index"])
+
+        out_solutions = []
+        weighted_success = 0.0
+        for i, sol in enumerate(solutions):
+            weight = norm_weights[i]
+            success = self._parse_percent(sol.get("success_likelihood", 0))
+            weighted_success += weight * success
+
+            allocated_amount = float(sol.get("allocated_amount", 0) or 0)
+            if allocated_amount <= 0:
+                allocated_amount = gap * weight
+
+            out_solutions.append({
+                "solution_name": sol.get("solution_name", "Unknown"),
+                "analogous_country": sol.get("analogous_country", "Unknown"),
+                "allocation_percentage": round(weight * 100.0, 2),
+                "allocated_amount": round(allocated_amount, 2),
+                "success_likelihood": f"{round(success, 1)}%",
+                "projected_impact_count": int(sol.get("projected_impact_count", 0) or 0),
+                "rationale": sol.get("rationale", ""),
+            })
+
+        package_success = max(0.0, min(100.0, weighted_success * stability))
+        return {
+            "proposed_solutions": out_solutions,
+            "package_success_score": round(package_success, 2),
+        }
+
+    def generate_final_report(self, country: str, year: int, category: Optional[str] = None,
+                              funding_gap_usd: Optional[float] = None, people_in_need: Optional[int] = None,
+                              stability_index: Optional[float] = None) -> Dict[str, Any]:
+        metrics = self.get_underfunding_metrics(country, year)
+        if category:
+            metrics["Category"] = category
+        if funding_gap_usd is not None:
+            metrics["Funding_Gap_USD"] = float(max(0.0, funding_gap_usd))
+        if people_in_need is not None:
+            metrics["People_in_Need"] = int(max(0, people_in_need))
+        if stability_index is not None:
+            metrics["Stability_Index"] = float(max(0.3, min(1.2, stability_index)))
+
+        first = self.fetch_analogous_solutions(
+            metrics["Country"],
+            metrics["Category"],
+            metrics["Year"],
+            metrics["Funding_Gap_USD"],
+            metrics["People_in_Need"],
+            metrics["Stability_Index"],
+        )
+
+        base = self.allocate_and_predict(metrics, first)
+
+        refine_payload = {
+            "metrics": metrics,
+            "simulation": base,
+            "instructions": "Refine Solutions for Local Context",
+        }
+        refined = self._groq_json(
+            "You refine humanitarian intervention packages for local implementation constraints. Output JSON only.",
+            json.dumps(refine_payload),
+        )
+
+        quantify_payload = {
+            "metrics": metrics,
+            "refined_simulation": refined,
+            "instructions": "Quantify Final Success Likelihood",
+        }
+        quantified = self._groq_json(
+            "You quantify final humanitarian package likelihood and impact. Output JSON only.",
+            json.dumps(quantify_payload),
+        )
+
+        impact_score = quantified.get("overall_impact_score", base["package_success_score"])
+        try:
+            impact_score = float(impact_score)
+        except (TypeError, ValueError):
+            impact_score = float(base["package_success_score"])
+        impact_score = max(0.0, min(100.0, impact_score))
+
+        return {
+            "summary": first.get("summary", ""),
+            "Reasoning": first.get("Reasoning", first.get("reasoning", "")),
+            "proposed_solutions": base["proposed_solutions"],
+            "overall_impact_score": round(impact_score, 2),
+            "country": metrics["Country"],
+            "year": metrics["Year"],
+            "crisis_type": metrics["Category"],
+            "funding_gap_usd": round(metrics["Funding_Gap_USD"], 2),
+            "underfunding_percentage": round(metrics["Underfunding_Percentage"], 2),
+            "people_in_need": metrics["People_in_Need"],
+            "stability_index": metrics["Stability_Index"],
+        }
+
+
+NEEDS_DF = _build_needs_df()
+SIMULATOR = HumanitarianSim(NEEDS_DF, SOLUTIONS_DATABASE)
 
 # ---------------------------------------------------------------------------
 # Fallback static data if h3-py is not installed
@@ -228,7 +546,39 @@ def get_signal():
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'healthy', 'h3_available': H3_AVAILABLE}), 200
+    return jsonify({
+        'status': 'healthy',
+        'h3_available': H3_AVAILABLE,
+        'groq_available': GROQ_AVAILABLE,
+        'groq_key_configured': bool(os.getenv("GROQ_API_KEY")),
+    }), 200
+
+
+@app.route('/api/solutions/simulate', methods=['POST'])
+def simulate_solutions():
+    payload = request.get_json(silent=True) or {}
+    country = payload.get("country")
+    year = int(payload.get("year", 2026))
+    category = payload.get("category")
+    funding_gap_usd = payload.get("funding_gap_usd")
+    people_in_need = payload.get("people_in_need")
+    stability_index = payload.get("stability_index")
+
+    if not country:
+        return jsonify({"error": "country is required"}), 400
+
+    try:
+        result = SIMULATOR.generate_final_report(
+            country=country,
+            year=year,
+            category=category,
+            funding_gap_usd=funding_gap_usd,
+            people_in_need=people_in_need,
+            stability_index=stability_index,
+        )
+        return jsonify(result), 200
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == '__main__':

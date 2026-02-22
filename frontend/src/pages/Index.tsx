@@ -1,5 +1,4 @@
 import { Suspense, useState } from "react";
-import { Link } from "react-router-dom";
 import GlobeScene from "@/components/GlobeScene";
 
 export default function Index() {
@@ -36,14 +35,6 @@ export default function Index() {
           Humanitarian Crisis Predictor
         </h1>
       </div>
-
-      {/* About link */}
-      <Link
-        to="/about"
-        className="absolute top-8 right-8 z-10 px-4 py-2 rounded-lg border border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 transition-colors pointer-events-auto text-sm font-medium"
-      >
-        About
-      </Link>
 
       {/* ── Legend ── */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none flex flex-col items-center gap-1.5"
