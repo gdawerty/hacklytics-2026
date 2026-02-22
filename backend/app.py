@@ -1074,9 +1074,10 @@ def classify_crisis():
 @app.route('/api/previous-year-funding', methods=['POST'])
 def previous_year_funding():
     """
-    Query Databricks for previous year funding received per category.
+    Query Databricks table for previous year funding received per category.
+    Queries: workspace.master_data.model_ml_updated2
     Expected payload: { "country": "<country name>" }
-    Returns: { "WASH": number, "Health": number, ..., "total": number, "year": number }
+    Returns: { "Food Security": number, "Wellbeing": number, ..., "total": number, "year": number }
     """
     payload = request.get_json(silent=True) or {}
     country = payload.get("country", "").strip()
@@ -1087,84 +1088,86 @@ def previous_year_funding():
     try:
         current_year = 2026
         previous_year = current_year - 1  # 2025
-        categories = ["WASH", "Health", "Nutrition", "Protection", "Education"]
+        categories = ["Food Security", "Wellbeing", "Support", "Shelter", "Protection"]
         
         funding_by_category = {}
-        
-        # Query Databricks for each category to get total_sum (funding received)
-        try:
-            import requests
-            HAS_REQUESTS = True
-        except ImportError:
-            HAS_REQUESTS = False
-        
         databricks_token = os.getenv("DATABRICKS_TOKEN")
-        databricks_endpoint = os.getenv("DATABRICKS_ENDPOINT")
+        databricks_warehouse_id = os.getenv("DATABRICKS_WAREHOUSE_ID")
+        databricks_host = os.getenv("DATABRICKS_HOST")
         
-        if not (HAS_REQUESTS and databricks_token and databricks_endpoint):
-            # Return fallback data if Databricks is not available
-            print(f"[WARNING] Databricks not available for {country}, using fallback funding data")
-            fallback_funding = {
-                "WASH": 450_000_000,
-                "Health": 550_000_000,
-                "Nutrition": 320_000_000,
-                "Protection": 280_000_000,
-                "Education": 240_000_000,
-                "total": 1_840_000_000,
-                "year": previous_year
-            }
-            return jsonify({**fallback_funding, "country": country}), 200
+        # Try to use Databricks SQL connector if available
+        try:
+            from databricks import sql
+            HAS_DATABRICKS_SQL = True
+        except ImportError:
+            HAS_DATABRICKS_SQL = False
         
-        # Query Databricks for each category
-        headers = {
-            "Authorization": f"Bearer {databricks_token}",
-            "Content-Type": "application/json"
-        }
-        
-        for category in categories:
+        if HAS_DATABRICKS_SQL and databricks_token and databricks_host:
             try:
-                payload_db = {
-                    "dataframe_records": [{
-                        "country": country,
-                        "category": category,
-                        "year": previous_year
-                    }]
-                }
-                
-                response = requests.post(
-                    databricks_endpoint,
-                    json=payload_db,
-                    headers=headers,
-                    timeout=10
-                )
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    # Extract total_sum from predictions
-                    if "predictions" in result and result["predictions"]:
-                        pred = result["predictions"][0]
-                        total_sum = pred.get("total_sum", 0)
-                    else:
-                        total_sum = result.get("total_sum", 0)
+                # Connect using databricks-sql-connector
+                print(f"[BACKEND] Querying Databricks SQL for {country} (year {previous_year})")
+                with sql.connect(
+                    host=databricks_host,
+                    http_path=f"/sql/1.0/warehouses/{databricks_warehouse_id}",
+                    auth_type="pat",
+                    token=databricks_token
+                ) as conn:
+                    cursor = conn.cursor()
                     
-                    funding_by_category[category] = float(total_sum)
-                else:
-                    # Use fallback per category if query fails
-                    funding_by_category[category] = 350_000_000 / len(categories)
+                    # Query the table directly for all categories at once
+                    sql_query = f"""
+                    SELECT category, total_sum 
+                    FROM workspace.master_data.model_ml_updated2
+                    WHERE country = '{country}' AND year = {previous_year}
+                    """
+                    
+                    print(f"[BACKEND] Executing SQL query: {sql_query}")
+                    cursor.execute(sql_query)
+                    rows = cursor.fetchall()
+                    
+                    print(f"[BACKEND] Query returned {len(rows)} rows")
+                    for row in rows:
+                        cat, total = row[0], row[1]
+                        funding_by_category[cat] = float(total)
+                        print(f"[BACKEND] {cat}: ${float(total):,.0f}")
+                    
+                    cursor.close()
             except Exception as e:
-                print(f"[WARNING] Failed to fetch funding for {country} - {category}: {e}")
-                funding_by_category[category] = 350_000_000 / len(categories)
+                print(f"[WARNING] Databricks SQL query failed: {e}")
+                print(f"[WARNING] Using fallback funding data for {country}")
+                funding_by_category = {cat: 0 for cat in categories}
+        else:
+            # Fallback if SQL connector not available
+            print(f"[WARNING] Databricks SQL not available (check DATABRICKS_WAREHOUSE_ID, DATABRICKS_HOST, token)")
+            funding_by_category = {cat: 0 for cat in categories}
+        
+        # Use fallback values if query returned no data
+        if not funding_by_category or all(v == 0 for v in funding_by_category.values()):
+            print(f"[WARNING] No funding data found for {country} in {previous_year}, using fallback")
+            fallback_funding = {
+                "Food Security": 450_000_000,
+                "Wellbeing": 550_000_000,
+                "Support": 320_000_000,
+                "Shelter": 280_000_000,
+                "Protection": 240_000_000,
+            }
+            funding_by_category = fallback_funding
+        
+        # Ensure all categories are present
+        for cat in categories:
+            if cat not in funding_by_category:
+                funding_by_category[cat] = 0
         
         total_funding = sum(funding_by_category.values())
         
         return jsonify({
             "country": country,
             "year": previous_year,
-            "WASH": funding_by_category.get("WASH", 0),
-            "Health": funding_by_category.get("Health", 0),
-            "Nutrition": funding_by_category.get("Nutrition", 0),
+            "Food Security": funding_by_category.get("Food Security", 0),
+            "Wellbeing": funding_by_category.get("Wellbeing", 0),
+            "Support": funding_by_category.get("Support", 0),
+            "Shelter": funding_by_category.get("Shelter", 0),
             "Protection": funding_by_category.get("Protection", 0),
-            "Education": funding_by_category.get("Education", 0),
             "total": total_funding
         }), 200
     except Exception as exc:

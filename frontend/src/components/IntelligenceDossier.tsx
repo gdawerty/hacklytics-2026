@@ -1157,16 +1157,16 @@ async function fetchPreviousYearFunding(country: string): Promise<Record<string,
     if (!response.ok) {
       console.error(`[FRONTEND] [Funding] Failed to fetch funding for ${country}`);
       // Return minimal fallback
-      return { WASH: 0, Health: 0, Nutrition: 0, Protection: 0, Education: 0 };
+      return { "Food Security": 0, "Wellbeing": 0, "Support": 0, "Shelter": 0, "Protection": 0 };
     }
     
     const data = await response.json();
     const result = {
-      WASH: data.WASH ?? 0,
-      Health: data.Health ?? 0,
-      Nutrition: data.Nutrition ?? 0,
-      Protection: data.Protection ?? 0,
-      Education: data.Education ?? 0,
+      "Food Security": data["Food Security"] ?? 0,
+      "Wellbeing": data["Wellbeing"] ?? 0,
+      "Support": data["Support"] ?? 0,
+      "Shelter": data["Shelter"] ?? 0,
+      "Protection": data["Protection"] ?? 0,
       total: data.total ?? 0,
     };
     
@@ -1545,27 +1545,36 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
             currentFunding: fundingData.total || 2_000_000_000,
             categories: [
               { 
-                name: "WASH", 
-                needAmount: fundingData.WASH || 0, 
-                receivedAmount: fundingData.WASH || 0,
+                name: "Food Security", 
+                needAmount: fundingData["Food Security"] || 0, 
+                receivedAmount: fundingData["Food Security"] || 0,
                 underfundingPct: 0,
                 impactScore: 0,
                 originPlan: "",
                 successIfFunded: 0
               },
               { 
-                name: "Health", 
-                needAmount: fundingData.Health || 0, 
-                receivedAmount: fundingData.Health || 0,
+                name: "Wellbeing", 
+                needAmount: fundingData["Wellbeing"] || 0, 
+                receivedAmount: fundingData["Wellbeing"] || 0,
                 underfundingPct: 0,
                 impactScore: 0,
                 originPlan: "",
                 successIfFunded: 0
               },
               { 
-                name: "Nutrition", 
-                needAmount: fundingData.Nutrition || 0, 
-                receivedAmount: fundingData.Nutrition || 0,
+                name: "Support", 
+                needAmount: fundingData["Support"] || 0, 
+                receivedAmount: fundingData["Support"] || 0,
+                underfundingPct: 0,
+                impactScore: 0,
+                originPlan: "",
+                successIfFunded: 0
+              },
+              { 
+                name: "Shelter", 
+                needAmount: fundingData["Shelter"] || 0, 
+                receivedAmount: fundingData["Shelter"] || 0,
                 underfundingPct: 0,
                 impactScore: 0,
                 originPlan: "",
@@ -1573,17 +1582,8 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
               },
               { 
                 name: "Protection", 
-                needAmount: fundingData.Protection || 0, 
-                receivedAmount: fundingData.Protection || 0,
-                underfundingPct: 0,
-                impactScore: 0,
-                originPlan: "",
-                successIfFunded: 0
-              },
-              { 
-                name: "Education", 
-                needAmount: fundingData.Education || 0, 
-                receivedAmount: fundingData.Education || 0,
+                needAmount: fundingData["Protection"] || 0, 
+                receivedAmount: fundingData["Protection"] || 0,
                 underfundingPct: 0,
                 impactScore: 0,
                 originPlan: "",
@@ -1770,7 +1770,7 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
                 Funding by Category
               </p>
               <div className="space-y-2">
-                {["WASH", "Health", "Nutrition", "Protection", "Education"].map((category) => {
+                {["Food Security", "Wellbeing", "Support", "Shelter", "Protection"].map((category) => {
                   const value = fundingByCategory[category] || 0;
                   const total = fundingByCategory.total || 1;
                   const pct = total > 0 ? (value / total) * 100 : 0;
