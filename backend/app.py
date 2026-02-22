@@ -5,8 +5,17 @@ import time
 import json
 import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote_plus
+from urllib.request import urlopen
+import xml.etree.ElementTree as ET
 
 import pandas as pd
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 try:
     import h3
@@ -504,6 +513,49 @@ def _generate_zones():
     return zones
 
 
+def _fetch_live_news(country: str, crisis: str, limit: int = 3) -> List[Dict[str, Any]]:
+    """
+    Pull live news from Google News RSS so links are real and clickable.
+    """
+    q = quote_plus(f"{country} {crisis} humanitarian")
+    rss_url = f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+    try:
+        with urlopen(rss_url, timeout=8) as resp:
+            xml_data = resp.read()
+    except Exception:
+        return []
+
+    try:
+        root = ET.fromstring(xml_data)
+    except Exception:
+        return []
+
+    items = []
+    channel = root.find("channel")
+    if channel is None:
+        return []
+
+    for item in channel.findall("item")[: max(1, min(limit, 8))]:
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        source = "Google News"
+
+        source_node = item.find("{http://search.yahoo.com/mrss/}source")
+        if source_node is not None and (source_node.text or "").strip():
+            source = source_node.text.strip()
+
+        if not title or not link:
+            continue
+        items.append({
+            "title": title,
+            "url": link,
+            "source": source,
+            "summary": f"Live coverage related to {country} · {crisis}.",
+            "imageQuery": f"{country} humanitarian crisis",
+        })
+    return items
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -552,6 +604,19 @@ def health_check():
         'groq_available': GROQ_AVAILABLE,
         'groq_key_configured': bool(os.getenv("GROQ_API_KEY")),
     }), 200
+
+
+@app.route('/api/news/search', methods=['GET'])
+def news_search():
+    country = (request.args.get("country") or "").strip()
+    crisis = (request.args.get("crisis") or "humanitarian crisis").strip()
+    limit = int(request.args.get("limit", 3))
+
+    if not country:
+        return jsonify({"error": "country is required"}), 400
+
+    results = _fetch_live_news(country, crisis, limit=limit)
+    return jsonify({"articles": results, "count": len(results)}), 200
 
 
 @app.route('/api/solutions/simulate', methods=['POST'])

@@ -34,6 +34,7 @@ interface Article {
   source:     string;
   url:        string;
   imageQuery: string;
+  imageUrl?:  string;
 }
 
 interface SocialPost {
@@ -42,6 +43,9 @@ interface SocialPost {
   hashtags: string[];
   views:    string;
   likes:    string;
+  context?: string;
+  tiktokUrl?: string;
+  coverImageUrl?: string;
 }
 
 interface AidOrg {
@@ -115,6 +119,17 @@ function setCached(key: string, data: DossierData) {
 const GROQ_KEY   = import.meta.env.VITE_GROQ_API_KEY as string;
 const GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL as string || "http://localhost:5001";
+const GOOGLE_WEATHER_KEY = import.meta.env.VITE_GOOGLE_WEATHER_API_KEY as string;
+const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string;
+
+const AID_CONTEXTS = [
+  "Food & Livelihoods",
+  "Health & Wellbeing",
+  "Protection & Safety",
+  "Shelter & Essential Services",
+  "Operations & Support",
+];
 
 function buildPrompt(country: string, state?: string) {
   const location = state ? `${state} (${country})` : country;
@@ -154,8 +169,9 @@ For ${location} as of February 2026, return this exact JSON:
       "title":      "<specific bold headline>",
       "summary":    "<2 sentence factual summary>",
       "source":     <"Reuters"|"NYT"|"WSJ"|"BBC"|"AP">,
-      "url":        "<realistic full URL from that source>",
-      "imageQuery": "<3-word Unsplash phrase>"
+      "url":        "<full https URL, must be a real accessible news link>",
+      "imageQuery": "<3-word Unsplash phrase>",
+      "imageUrl":   "<optional https image URL>"
     }
   ],
   "social": [
@@ -164,7 +180,10 @@ For ${location} as of February 2026, return this exact JSON:
       "caption":  "<authentic 20-30 word social post about this crisis>",
       "hashtags": ["#tag1", "#tag2", "#tag3"],
       "views":    "<e.g. 2.4M>",
-      "likes":    "<e.g. 180K>"
+      "likes":    "<e.g. 180K>",
+      "context":  <"${AID_CONTEXTS.join('"|"')}">,
+      "tiktokUrl": "<full https TikTok video URL>",
+      "coverImageUrl": "<optional https image URL for thumbnail>"
     }
   ],
   "aidOrgs": [
@@ -177,7 +196,8 @@ For ${location} as of February 2026, return this exact JSON:
   ]
 }
 
-Include exactly 3 articles, 4 social posts (realistic viral content raising awareness), and 4 aid organizations. Be specific and factual.`;
+Include exactly 3 articles, 5 social posts (one per context bucket), and 4 aid organizations. Be specific and factual.
+For URLs, avoid placeholders and return valid external links with https.`;
 }
 
 async function fetchDossier(country: string, state?: string): Promise<DossierData> {
@@ -199,6 +219,33 @@ async function fetchDossier(country: string, state?: string): Promise<DossierDat
   if (!res.ok) throw new Error(`Groq ${res.status}`);
   const raw  = await res.json();
   const data = JSON.parse(raw.choices[0].message.content) as DossierData;
+
+  // Replace hallucinated/broken article links with live searchable web results.
+  try {
+    const crisisTopic = data?.sectors?.food?.label || "humanitarian crisis";
+    const liveRes = await fetch(
+      `${BACKEND_URL}/api/news/search?country=${encodeURIComponent(country)}&crisis=${encodeURIComponent(crisisTopic)}&limit=3`
+    );
+    if (liveRes.ok) {
+      const live = await liveRes.json();
+      const liveArticles = (live?.articles ?? []) as Array<{
+        title: string; url: string; source: string; summary: string; imageQuery: string;
+      }>;
+      if (liveArticles.length > 0) {
+        data.articles = liveArticles.map((a) => ({
+          title: a.title,
+          summary: a.summary,
+          source: a.source,
+          url: a.url,
+          imageQuery: a.imageQuery,
+          imageUrl: `https://source.unsplash.com/800x450/?${encodeURIComponent(a.imageQuery)}`,
+        }));
+      }
+    }
+  } catch {
+    // keep Groq-provided articles as fallback
+  }
+
   setCached(cacheKey, data);
   return data;
 }
@@ -207,6 +254,73 @@ async function fetchDossier(country: string, state?: string): Promise<DossierDat
 const OWM_KEY   = import.meta.env.VITE_OWM_API_KEY as string;
 const WEATHER_MEM_CACHE = new Map<string, { data: WeatherData; ts: number }>();
 const WEATHER_TTL = 60 * 60 * 1000;
+
+const EXPLAIN_CACHE = new Map<string, string>();
+
+function ensureExternalUrl(url: string | undefined, q: string, base = "https://news.google.com/search?q="): string {
+  if (!url) return `${base}${encodeURIComponent(q)}`;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return url;
+  } catch {}
+  return `${base}${encodeURIComponent(q)}`;
+}
+
+function inferAidContext(post: SocialPost): string {
+  if (post.context && AID_CONTEXTS.includes(post.context)) return post.context;
+  const h = post.hashtags.map(t => t.toLowerCase()).join(" ");
+  if (/(food|hunger|nutrition|agri|livelihood|cash)/.test(h)) return "Food & Livelihoods";
+  if (/(health|med|clinic|doctor|school|education)/.test(h)) return "Health & Wellbeing";
+  if (/(protect|gbv|child|safety|traffick|mine)/.test(h)) return "Protection & Safety";
+  if (/(wash|water|shelter|camp|nfi|telecom)/.test(h)) return "Shelter & Essential Services";
+  return "Operations & Support";
+}
+
+const ORG_LINKS: Record<string, string> = {
+  "WFP": "https://www.wfp.org",
+  "MSF": "https://www.msf.org",
+  "ICRC": "https://www.icrc.org",
+  "UNHCR": "https://www.unhcr.org",
+  "UNICEF": "https://www.unicef.org",
+  "WHO": "https://www.who.int",
+  "OCHA": "https://www.unocha.org",
+  "IRC": "https://www.rescue.org",
+  "SAVE THE CHILDREN": "https://www.savethechildren.org",
+};
+
+function orgWebsite(name: string): string {
+  const upper = name.toUpperCase();
+  for (const key of Object.keys(ORG_LINKS)) {
+    if (upper.includes(key)) return ORG_LINKS[key];
+  }
+  return `https://www.google.com/search?q=${encodeURIComponent(name + " humanitarian organization")}`;
+}
+
+async function fetchGroqContext(country: string, target: string, kind: "sector" | "organization" | "solution"): Promise<string> {
+  const key = `${country}:${kind}:${target}`;
+  if (EXPLAIN_CACHE.has(key)) return EXPLAIN_CACHE.get(key)!;
+  const prompt = `Give a concise humanitarian explanation (4-6 lines) for why "${target}" helps ${country} in ${kind} context.
+Include:
+1) Why it worked in similar countries
+2) Practical implementation in ${country}
+3) Near-term expected outcome
+Return plain text only.`;
+  const res = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      max_tokens: 220,
+    }),
+  });
+  if (!res.ok) throw new Error("Context generation unavailable");
+  const raw = await res.json();
+  const text = (raw.choices?.[0]?.message?.content ?? "").trim();
+  EXPLAIN_CACHE.set(key, text);
+  return text;
+}
 
 function owmToCondition(id: number): WeatherData["condition"] {
   if (id >= 200 && id < 300) return "Storm";
@@ -250,6 +364,42 @@ async function fetchRealWeather(location: string): Promise<WeatherData | null> {
     WEATHER_MEM_CACHE.set(location, { data: result, ts: Date.now() });
     return result;
   } catch { return null; }
+}
+
+async function fetchGoogleWeather(location: string): Promise<WeatherData | null> {
+  if (!GOOGLE_WEATHER_KEY || !GOOGLE_MAPS_KEY) return null;
+  try {
+    const geoRes = await fetch(
+      `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(location)}&key=${GOOGLE_MAPS_KEY}`
+    );
+    if (!geoRes.ok) return null;
+    const geo = await geoRes.json();
+    const loc = geo?.results?.[0]?.geometry?.location;
+    if (!loc?.lat || !loc?.lng) return null;
+
+    const weatherRes = await fetch(
+      `https://weather.googleapis.com/v1/currentConditions:lookup?key=${GOOGLE_WEATHER_KEY}&location.latitude=${loc.lat}&location.longitude=${loc.lng}&unitsSystem=METRIC`
+    );
+    if (!weatherRes.ok) return null;
+    const d = await weatherRes.json();
+
+    const temp = Math.round(d?.temperature?.degrees ?? d?.temperature ?? 0);
+    const high = Math.round(d?.maxTemperature?.degrees ?? temp + 2);
+    const low = Math.round(d?.minTemperature?.degrees ?? temp - 3);
+    const humidity = Math.round(d?.relativeHumidity ?? 0);
+    const windKph = Math.round((d?.wind?.speed?.value ?? 0) * 3.6);
+    const icon = String(d?.weatherCondition?.type ?? "CLOUDY").toUpperCase();
+    const condition: WeatherData["condition"] =
+      icon.includes("RAIN") ? "Rain" :
+      icon.includes("STORM") || icon.includes("THUNDER") ? "Storm" :
+      icon.includes("SNOW") ? "Snow" :
+      icon.includes("HAZE") || icon.includes("DUST") || icon.includes("SMOKE") ? "Haze" :
+      icon.includes("CLEAR") || icon.includes("SUN") ? "Clear" : "Cloudy";
+
+    return { temp, high, low, humidity, windKph, condition };
+  } catch {
+    return null;
+  }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -551,7 +701,9 @@ function TrendGraph({ trend }: { trend: TrendPoint[] }) {
 }
 
 function IntelligenceCard({ article, index }: { article: Article; index: number }) {
-  const open = () => { if (article.url) window.open(article.url, "_blank", "noopener,noreferrer"); };
+  const safeUrl = ensureExternalUrl(article.url, `${article.source} ${article.title}`);
+  const imgUrl = article.imageUrl || `https://source.unsplash.com/800x450/?${encodeURIComponent(article.imageQuery || article.title)}`;
+  const open = () => { window.open(safeUrl, "_blank", "noopener,noreferrer"); };
   return (
     <motion.div
       initial={{ opacity: 0, y: 18, scale: 0.94 }}
@@ -574,6 +726,15 @@ function IntelligenceCard({ article, index }: { article: Article; index: number 
         <span className="text-white/18 text-[9px] font-mono opacity-0 group-hover:opacity-100 transition-opacity">↗ open</span>
       </div>
       <div className="px-4 py-3">
+        <img
+          src={imgUrl}
+          alt={article.title}
+          className="mb-2.5 h-28 w-full rounded-md object-cover border border-white/10"
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).src =
+              `https://placehold.co/800x450/020617/94a3b8?text=${encodeURIComponent(article.source)}`;
+          }}
+        />
         <h3 className="text-white/90 font-semibold text-[12px] leading-snug tracking-tight mb-1.5 group-hover:text-white transition-colors">
           {article.title}
         </h3>
@@ -584,6 +745,46 @@ function IntelligenceCard({ article, index }: { article: Article; index: number 
 }
 
 // ─── AID TAB ───────────────────────────────────────────────────────────────
+function ContextExplain({
+  country, kind, target,
+}: { country: string; kind: "sector" | "organization" | "solution"; target: string }) {
+  const [loading, setLoading] = useState(false);
+  const [text, setText] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  const onMore = async () => {
+    setOpen(v => !v);
+    if (text || loading) return;
+    setLoading(true);
+    try {
+      const t = await fetchGroqContext(country, target, kind);
+      setText(t);
+    } catch {
+      setText("Could not fetch context right now. Please retry.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={onMore}
+        className="text-[9px] font-mono uppercase tracking-widest px-2 py-1 rounded border border-cyan-400/25 text-cyan-300/80 hover:bg-cyan-400/10 transition-colors"
+      >
+        Give More Context
+      </button>
+      {open && (
+        <div className="mt-2 rounded-md border border-white/10 bg-slate-900/50 backdrop-blur-xl px-2.5 py-2">
+          <p className="text-[10px] text-white/70 leading-relaxed whitespace-pre-wrap font-mono">
+            {loading ? "Generating context..." : text}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FundingBeastModule({ country, state }: { country: string; state?: string }) {
   const mitigation = useMemo(() => buildMitigationMock(country, state), [country, state]);
   const animKey = `${country}::${state ?? "country"}`;
@@ -686,6 +887,7 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
               <span className="text-white/40">Likelihood of Success</span>
               <span className="text-cyan-300 font-bold">{sector.successIfFunded}% if filled</span>
             </div>
+            <ContextExplain country={state ?? country} kind="solution" target={`${sector.name} Plan`} />
           </div>
         ))}
       </div>
@@ -693,7 +895,7 @@ function FundingBeastModule({ country, state }: { country: string; state?: strin
   );
 }
 
-function SectorStatus({ sectors }: { sectors: SectorData }) {
+function SectorStatus({ sectors, country }: { sectors: SectorData; country: string }) {
   const items = [
     { key: "food",   abbr: "FOOD", d: sectors.food   },
     { key: "water",  abbr: "H₂O",  d: sectors.water  },
@@ -750,6 +952,14 @@ function AidOrgRow({ org, index }: { org: AidOrg; index: number }) {
         <div>
           <p className="text-white/85 font-mono font-bold text-[13px]">{org.name}</p>
           <p className="text-white/30 text-[10px] mt-0.5 leading-snug">{org.focus}</p>
+          <a
+            href={orgWebsite(org.name)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center mt-2 rounded-md border border-cyan-400/25 bg-cyan-500/10 px-2.5 py-1 text-[9px] font-mono uppercase tracking-wider text-cyan-300/80 hover:bg-cyan-500/20 hover:text-cyan-200 transition-colors"
+          >
+            More Info ↗
+          </a>
         </div>
         <span className="text-[8px] font-mono font-bold uppercase tracking-widest px-2 py-0.5 rounded shrink-0 ml-2"
           style={{ background: `${color}18`, color, border: `1px solid ${color}28` }}>
@@ -777,7 +987,13 @@ function AidOrgRow({ org, index }: { org: AidOrg; index: number }) {
 // ─── SOCIAL TAB ────────────────────────────────────────────────────────────
 function SocialCard({ post, index }: { post: SocialPost; index: number }) {
   const primaryTag    = post.hashtags[0]?.replace("#", "") ?? "";
-  const tiktokSearch  = `https://www.tiktok.com/search?q=${encodeURIComponent(primaryTag)}`;
+  const context = inferAidContext(post);
+  const tiktokSearch  = ensureExternalUrl(
+    post.tiktokUrl,
+    `${context} ${primaryTag} humanitarian tiktok`,
+    "https://www.tiktok.com/search?q="
+  );
+  const cover = post.coverImageUrl || `https://placehold.co/1200x675/020617/22d3ee?text=${encodeURIComponent(context)}`;
   const initial       = post.creator.replace("@", "")[0]?.toUpperCase() ?? "?";
 
   return (
@@ -813,6 +1029,18 @@ function SocialCard({ post, index }: { post: SocialPost; index: number }) {
 
       {/* Caption */}
       <div className="px-4 py-3">
+        <a href={tiktokSearch} target="_blank" rel="noopener noreferrer">
+          <img
+            src={cover}
+            alt={`${context} context`}
+            className="mb-2.5 h-32 w-full rounded-md object-cover border border-white/10"
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).src =
+                `https://placehold.co/1200x675/020617/94a3b8?text=${encodeURIComponent("TikTok Context")}`;
+            }}
+          />
+        </a>
+        <p className="text-cyan-300/70 text-[9px] font-mono uppercase tracking-[0.14em] mb-2">{context}</p>
         <p className="text-white/72 text-[12px] leading-relaxed mb-2.5">{post.caption}</p>
 
         {/* Hashtags */}
@@ -860,7 +1088,7 @@ function SocialAwarenessNote({ country }: { country: string }) {
       style={{ background: "rgba(34,211,238,0.04)", border: "1px solid rgba(34,211,238,0.10)" }}>
       <div className="w-1 h-1 rounded-full mt-1.5 shrink-0 animate-pulse" style={{ background: "rgba(34,211,238,0.6)" }} />
       <p className="text-[10px] font-mono leading-relaxed" style={{ color: "rgba(34,211,238,0.45)" }}>
-        SOCIAL PULSE — Representative posts raising awareness of the {country} crisis. Click hashtags or ↗ watch to search live content on TikTok.
+        SOCIAL PULSE — Context-specific videos for {country} across 5 frameworks: Food & Livelihoods, Health & Wellbeing, Protection & Safety, Shelter & Essential Services, and Operations & Support.
       </p>
     </div>
   );
@@ -908,8 +1136,17 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
       .finally(() => { if (!cancelled) setLoading(false); });
 
     const locationQuery = state ? `${state}, ${country}` : country;
-    fetchRealWeather(locationQuery)
-      .then(w => { if (!cancelled && w) setRealWeather(w); })
+    fetchGoogleWeather(locationQuery)
+      .then(w => {
+        if (cancelled) return;
+        if (w) {
+          setRealWeather(w);
+          return;
+        }
+        return fetchRealWeather(locationQuery).then(fallback => {
+          if (!cancelled && fallback) setRealWeather(fallback);
+        });
+      })
       .catch(() => {});
 
     return () => { cancelled = true; };
@@ -940,7 +1177,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
             style={{ background: "rgba(34,211,238,0.07)", border: "1px solid rgba(34,211,238,0.18)" }}>
             <div className="w-1 h-1 rounded-full" style={{ background: "rgba(34,211,238,0.7)" }} />
             <span className="text-[8px] font-mono uppercase tracking-widest" style={{ color: "rgba(34,211,238,0.60)" }}>
-              SIGINT · HUMANITARIAN
+              HUMANITARIAN DASHBOARD
             </span>
           </div>
           <button onClick={onClose}
@@ -1038,7 +1275,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
                   <Reveal delay={0.1}>
                     <div className="flex items-center gap-2 pt-1 border-t border-white/[0.05]">
                       <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "rgba(34,211,238,0.7)" }} />
-                      <p className="text-[9px] text-white/22 uppercase tracking-[0.2em] font-mono font-semibold">SIGINT BRIEFS</p>
+                      <p className="text-[9px] text-white/22 uppercase tracking-[0.2em] font-mono font-semibold">HUMANITARIAN DASHBOARD</p>
                     </div>
                   </Reveal>
                   {data.articles.map((a, i) => (
@@ -1054,7 +1291,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
                     <FundingBeastModule country={country} state={state} />
                   </Reveal>
                   <Reveal delay={0.08}>
-                    <SectorStatus sectors={data.sectors} />
+                    <SectorStatus sectors={data.sectors} country={state ?? country} />
                   </Reveal>
                   <Reveal delay={0.14}>
                     <div className="flex items-center gap-2 pt-1 border-t border-white/[0.05]">
@@ -1064,7 +1301,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
                   </Reveal>
                   {(data.aidOrgs ?? []).length > 0 ? (
                     (data.aidOrgs ?? []).map((org, i) => (
-                      <AidOrgRow key={i} org={org} index={i} />
+                      <AidOrgRow key={i} org={org} index={i} country={state ?? country} />
                     ))
                   ) : (
                     <p className="text-white/20 text-[11px] font-mono">No aid organization data available.</p>
@@ -1094,7 +1331,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
       {/* ── Footer ── */}
       <div className="shrink-0 px-5 py-3 border-t border-white/6">
         <p className="text-white/12 text-[9px] font-mono tracking-wide">
-          Weather: OpenWeatherMap · Intel: Groq Llama-3.3-70b · {new Date().toUTCString().slice(0, 16)}
+          Weather: Google Weather API (fallback OpenWeatherMap) · Intel: Groq Llama-3.3-70b · {new Date().toUTCString().slice(0, 16)}
         </p>
       </div>
     </motion.div>

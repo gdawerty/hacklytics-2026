@@ -1,52 +1,47 @@
-import { Suspense, useState } from "react";
-import GlobeScene from "@/components/GlobeScene";
+import { useNavigate } from "react-router-dom";
+import { motion } from "framer-motion";
+import StarfieldCanvas from "@/components/StarfieldCanvas";
 
 export default function Index() {
-  const [isZoomedIn, setIsZoomedIn] = useState(false);
+  const navigate = useNavigate();
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-black">
+      <StarfieldCanvas />
 
-      {/* ── Layer 1: Globe ── */}
-      <div className="absolute inset-0" style={{ zIndex: 2 }}>
-        <Suspense
-          fallback={
-            <div className="flex h-full items-center justify-center font-mono text-[11px] tracking-widest"
-              style={{ color: "rgba(34,211,238,0.4)" }}>
-              INITIALIZING…
-            </div>
-          }
+      <div className="absolute inset-0 z-10 flex items-center justify-center px-6">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9, y: 18 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          transition={{ type: "spring", stiffness: 220, damping: 24 }}
+          className="w-full max-w-3xl rounded-2xl border border-white/10 bg-slate-900/40 backdrop-blur-xl p-10 text-center"
         >
-          <GlobeScene onSelectionChange={setIsZoomedIn} />
-        </Suspense>
-      </div>
-
-      {/* ── Header ── */}
-      <div
-        className="absolute top-8 left-0 right-0 pointer-events-none text-center transition-all duration-300"
-        style={{
-          zIndex: 10,
-          opacity: isZoomedIn ? 0 : 1,
-          transform: isZoomedIn ? "translateY(-12px)" : "translateY(0)",
-        }}
-      >
-        <h1 className="text-3xl font-bold tracking-tight md:text-4xl"
-          style={{ color: "rgba(255,255,255,0.92)" }}>
-          Humanitarian Crisis Predictor
-        </h1>
-      </div>
-
-      {/* ── Legend ── */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none flex flex-col items-center gap-1.5"
-        style={{ zIndex: 10 }}>
-        <div className="h-2 w-56 rounded-full"
-          style={{ background: "linear-gradient(to right, #60a5fa, #34d399, #facc15, #fb923c, #f87171)" }} />
-        <div className="flex w-56 justify-between text-[9px] font-mono uppercase tracking-widest"
-          style={{ color: "rgba(255,255,255,0.22)" }}>
-          <span>5%</span>
-          <span>Crisis Likelihood</span>
-          <span>95%</span>
-        </div>
+          <motion.h1
+            initial={{ opacity: 0, y: 22 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.2, duration: 0.45, ease: "easeOut" }}
+            className="text-5xl font-bold tracking-tight text-white md:text-6xl"
+          >
+            Humanitarian Crisis Predictor
+          </motion.h1>
+          <motion.p
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.42, duration: 0.35, ease: "easeOut" }}
+            className="mt-4 text-sm text-white/55"
+          >
+            Predictive signal intelligence for funding gaps and mitigation outcomes.
+          </motion.p>
+          <motion.button
+            initial={{ opacity: 0, y: 14, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ type: "spring", stiffness: 260, damping: 20, delay: 0.66 }}
+            onClick={() => navigate("/dashboard")}
+            className="mt-8 rounded-xl border border-cyan-400/40 bg-cyan-500/10 px-8 py-3 text-sm font-semibold text-cyan-200 transition-all hover:bg-cyan-500/20 hover:border-cyan-300/60"
+          >
+            Get Started
+          </motion.button>
+        </motion.div>
       </div>
     </div>
   );
