@@ -619,6 +619,142 @@ def news_search():
     return jsonify({"articles": results, "count": len(results)}), 200
 
 
+@app.route('/api/databricks/predict', methods=['POST'])
+def databricks_predict():
+    print("=" * 70)
+    print("[BACKEND] [databricks_predict] ENDPOINT CALLED")
+    print("=" * 70)
+    print(f"[BACKEND] Request method: {request.method}")
+    print(f"[BACKEND] Request URL: {request.url}")
+    print(f"[BACKEND] Request headers: {dict(request.headers)}")
+    
+    payload = request.get_json(silent=True) or {}
+    print(f"[BACKEND] Request payload: {json.dumps(payload, indent=2)}")
+    
+    # Get Databricks credentials from environment
+    databricks_token = os.getenv("DATABRICKS_TOKEN")
+    databricks_endpoint = os.getenv("DATABRICKS_ENDPOINT")
+    
+    print(f"[BACKEND] Databricks token present: {bool(databricks_token)}")
+    print(f"[BACKEND] Databricks endpoint: {databricks_endpoint}")
+    
+    if not databricks_token:
+        print("[BACKEND] ERROR: DATABRICKS_TOKEN not found in environment!")
+        return jsonify({"error": "DATABRICKS_TOKEN not configured"}), 500
+    
+    if not databricks_endpoint:
+        print("[BACKEND] ERROR: DATABRICKS_ENDPOINT not found in environment!")
+        return jsonify({"error": "DATABRICKS_ENDPOINT not configured"}), 500
+    
+    try:
+        try:
+            import requests
+            from requests.exceptions import Timeout as RequestsTimeout, ConnectionError as RequestsConnectionError, HTTPError as RequestsHTTPError
+            HAS_REQUESTS = True
+        except ImportError:
+            HAS_REQUESTS = False
+            RequestsTimeout = None
+            RequestsConnectionError = None
+            RequestsHTTPError = None
+            import urllib.request
+            import urllib.error
+        
+        print(f"[BACKEND] Making request to Databricks endpoint: {databricks_endpoint}")
+        print(f"[BACKEND] Request payload: {json.dumps(payload, indent=2)}")
+        
+        if HAS_REQUESTS:
+            # Use requests library if available (better error handling)
+            # Increased timeout for Databricks serving endpoints which can take longer
+            print(f"[BACKEND] Sending POST request to Databricks (timeout: 60s)...")
+            response = requests.post(
+                databricks_endpoint,
+                json=payload,
+                headers={
+                    'Authorization': f'Bearer {databricks_token}',
+                    'Content-Type': 'application/json',
+                },
+                timeout=(10, 60)  # (connect timeout, read timeout) - 60s for model inference
+            )
+            print(f"[BACKEND] Databricks response status: {response.status_code}")
+            print(f"[BACKEND] Databricks response headers: {dict(response.headers)}")
+            
+            if response.status_code != 200:
+                print(f"[BACKEND] ERROR: HTTP {response.status_code}")
+                print(f"[BACKEND] Error body: {response.text}")
+                print("=" * 70)
+                return jsonify({"error": f"Databricks API error: {response.status_code}", "details": response.text}), response.status_code
+            
+            result = response.json()
+            print(f"[BACKEND] Databricks response: {json.dumps(result, indent=2)}")
+            print("=" * 70)
+            return jsonify(result), 200
+        else:
+            # Fallback to urllib
+            req = urllib.request.Request(
+                databricks_endpoint,
+                data=json.dumps(payload).encode('utf-8'),
+                headers={
+                    'Authorization': f'Bearer {databricks_token}',
+                    'Content-Type': 'application/json',
+                },
+                method='POST'
+            )
+            
+            with urllib.request.urlopen(req, timeout=60) as response:
+                result = json.loads(response.read().decode('utf-8'))
+                print(f"[BACKEND] Databricks response status: {response.status}")
+                print(f"[BACKEND] Databricks response: {json.dumps(result, indent=2)}")
+                print("=" * 70)
+                return jsonify(result), 200
+            
+    except RequestsTimeout as e:
+        print(f"[BACKEND] ERROR: Request timeout - Databricks took too long to respond")
+        print(f"[BACKEND] Timeout details: {str(e)}")
+        print("=" * 70)
+        return jsonify({
+            "error": "Databricks request timeout",
+            "message": "The prediction request took too long to complete. The model may be processing a complex request.",
+            "details": str(e)
+        }), 504
+    except RequestsConnectionError as e:
+        print(f"[BACKEND] ERROR: Connection error - Could not reach Databricks")
+        print(f"[BACKEND] Connection details: {str(e)}")
+        print("=" * 70)
+        return jsonify({
+            "error": "Databricks connection error",
+            "message": "Could not establish connection to Databricks endpoint.",
+            "details": str(e)
+        }), 503
+    except RequestsHTTPError as e:
+        print(f"[BACKEND] ERROR: HTTP {e.response.status_code}: {e.response.reason}")
+        try:
+            error_body = e.response.json()
+        except:
+            error_body = e.response.text
+        print(f"[BACKEND] Error body: {error_body}")
+        print("=" * 70)
+        return jsonify({
+            "error": f"Databricks API error: {e.response.status_code}",
+            "details": error_body
+        }), e.response.status_code
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8') if hasattr(e, 'read') else "No error body"
+        print(f"[BACKEND] ERROR: HTTP {e.code}: {e.reason}")
+        print(f"[BACKEND] Error body: {error_body}")
+        print("=" * 70)
+        return jsonify({"error": f"Databricks API error: {e.code} {e.reason}", "details": error_body}), e.code
+    except Exception as exc:
+        print(f"[BACKEND] ERROR: {type(exc).__name__}: {str(exc)}")
+        import traceback
+        traceback.print_exc()
+        print("=" * 70)
+        return jsonify({
+            "error": "Internal server error",
+            "message": str(exc),
+            "type": type(exc).__name__
+        }), 500
+
+
 @app.route('/api/solutions/simulate', methods=['POST'])
 def simulate_solutions():
     payload = request.get_json(silent=True) or {}

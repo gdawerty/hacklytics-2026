@@ -250,6 +250,77 @@ async function fetchDossier(country: string, state?: string): Promise<DossierDat
   return data;
 }
 
+// ─── Databricks Funding Prediction ─────────────────────────────────────────
+async function fetchDatabricksPrediction(country: string): Promise<any> {
+  console.log('[FRONTEND] [Databricks] Starting prediction request for country:', country);
+  
+  const currentYear = new Date().getFullYear();
+  const payload = {
+    dataframe_records: [
+      {
+        country: country,
+        category: "Food Security",
+        year: currentYear
+      }
+    ]
+  };
+
+  console.log('[FRONTEND] [Databricks] Request payload:', JSON.stringify(payload, null, 2));
+  console.log('[FRONTEND] [Databricks] Backend URL:', BACKEND_URL);
+  console.log('[FRONTEND] [Databricks] Calling backend proxy endpoint...');
+
+  try {
+    const startTime = Date.now();
+    const res = await fetch(`${BACKEND_URL}/api/databricks/predict`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const duration = Date.now() - startTime;
+    console.log('[FRONTEND] [Databricks] Response received:', {
+      status: res.status,
+      statusText: res.statusText,
+      duration: `${duration}ms`,
+      headers: Object.fromEntries(res.headers.entries()),
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = errorText;
+      }
+      console.error('[FRONTEND] [Databricks] Error response:', {
+        status: res.status,
+        statusText: res.statusText,
+        error: errorData,
+      });
+      throw new Error(`Databricks ${res.status}: ${JSON.stringify(errorData)}`);
+    }
+
+    const result = await res.json();
+    console.log('[FRONTEND] [Databricks] Success! Response data:', {
+      result,
+      resultType: typeof result,
+      isArray: Array.isArray(result),
+      keys: result ? Object.keys(result) : null,
+    });
+    return result;
+  } catch (err) {
+    console.error('[FRONTEND] [Databricks] Request failed:', {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+      name: err instanceof Error ? err.name : undefined,
+    });
+    return null;
+  }
+}
+
 // ─── OpenWeatherMap real weather ────────────────────────────────────────────
 const OWM_KEY   = import.meta.env.VITE_OWM_API_KEY as string;
 const WEATHER_MEM_CACHE = new Map<string, { data: WeatherData; ts: number }>();
@@ -665,36 +736,153 @@ function OperationalPulse({ op }: { op: OperationalData }) {
 }
 
 // ─── INTEL TAB ─────────────────────────────────────────────────────────────
-function TrendGraph({ trend }: { trend: TrendPoint[] }) {
-  const max      = Math.max(...trend.map(t => t.underfunding));
-  const critical = max > 70;
+function DatabricksPrediction({ predictionData }: { predictionData: any }) {
+  if (!predictionData) {
+    return (
+      <div className="rounded-lg overflow-hidden border border-white/[0.07]" style={{ background: "rgba(8,13,30,0.72)" }}>
+        <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/[0.05]">
+          <p className="text-[9px] text-white/25 uppercase tracking-[0.2em] font-mono font-semibold">FUNDING PREDICTION</p>
+          <span className="text-[9px] font-mono text-white/30">Loading...</span>
+        </div>
+        <div className="px-4 py-6 text-center">
+          <p className="text-[10px] text-white/40 font-mono">Fetching prediction data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Extract prediction value from Databricks response
+  // The response structure may vary, so we handle different formats
+  console.log('[FRONTEND] [DatabricksPrediction] Raw prediction data:', predictionData);
+  console.log('[FRONTEND] [DatabricksPrediction] Type:', typeof predictionData);
+  console.log('[FRONTEND] [DatabricksPrediction] Is array:', Array.isArray(predictionData));
+  
+  let predictionValue: number | null = null;
+  let rawValue: any = null;
+
+  // Try different response formats
+  if (predictionData && typeof predictionData === 'object') {
+    // Handle Databricks format: {predictions: [{predicted_underfunded_percent: 36.13}]}
+    if (Array.isArray(predictionData.predictions) && predictionData.predictions.length > 0) {
+      const firstPrediction = predictionData.predictions[0];
+      // Check for common prediction field names
+      if (typeof firstPrediction === 'object' && firstPrediction !== null) {
+        rawValue = firstPrediction.predicted_underfunded_percent ?? 
+                   firstPrediction.prediction ?? 
+                   firstPrediction.value ?? 
+                   firstPrediction.amount ?? 
+                   firstPrediction.funding ?? 
+                   firstPrediction;
+      } else {
+        rawValue = firstPrediction;
+      }
+    } else if (predictionData.prediction !== undefined) {
+      rawValue = predictionData.prediction;
+    } else if (Array.isArray(predictionData) && predictionData.length > 0) {
+      rawValue = predictionData[0];
+    } else if ('predictions' in predictionData && Array.isArray(predictionData.predictions)) {
+      const firstPrediction = predictionData.predictions[0];
+      if (typeof firstPrediction === 'object' && firstPrediction !== null) {
+        rawValue = firstPrediction.predicted_underfunded_percent ?? 
+                   firstPrediction.prediction ?? 
+                   firstPrediction.value ?? 
+                   firstPrediction;
+      } else {
+        rawValue = firstPrediction;
+      }
+    }
+  } else if (typeof predictionData === 'number') {
+    rawValue = predictionData;
+  } else if (Array.isArray(predictionData) && predictionData.length > 0) {
+    rawValue = predictionData[0];
+  }
+
+  console.log('[FRONTEND] [DatabricksPrediction] Extracted raw value:', rawValue);
+  console.log('[FRONTEND] [DatabricksPrediction] Raw value type:', typeof rawValue);
+
+  // Convert to number safely
+  if (rawValue !== null && rawValue !== undefined) {
+    if (typeof rawValue === 'number') {
+      predictionValue = rawValue;
+    } else if (typeof rawValue === 'string') {
+      const parsed = parseFloat(rawValue);
+      if (!isNaN(parsed)) {
+        predictionValue = parsed;
+      }
+    } else if (typeof rawValue === 'object') {
+      // Try to find a numeric value in the object
+      const numericKeys = ['predicted_underfunded_percent', 'prediction', 'value', 'amount', 'funding', 'underfunded_percent'];
+      for (const key of numericKeys) {
+        if (key in rawValue && typeof rawValue[key] === 'number') {
+          predictionValue = rawValue[key];
+          break;
+        }
+      }
+    }
+  }
+
+  console.log('[FRONTEND] [DatabricksPrediction] Final prediction value:', predictionValue);
+  console.log('[FRONTEND] [DatabricksPrediction] Final value type:', typeof predictionValue);
+
+  // Format the prediction value
+  // Note: The value is "predicted_underfunded_percent" so it's a percentage, not a dollar amount
+  const formatPrediction = (value: number | null): string => {
+    if (value === null || value === undefined || isNaN(value)) {
+      console.warn('[FRONTEND] [DatabricksPrediction] Invalid value for formatting:', value);
+      return "N/A";
+    }
+    
+    // Ensure value is a number
+    const numValue = typeof value === 'number' ? value : parseFloat(String(value));
+    if (isNaN(numValue)) {
+      console.warn('[FRONTEND] [DatabricksPrediction] Could not convert to number:', value);
+      return "N/A";
+    }
+    
+    // Since it's "predicted_underfunded_percent", format as percentage
+    return `${numValue.toFixed(2)}%`;
+  };
+
+  const formattedValue = formatPrediction(predictionValue);
+  // For percentage, high is > 70%, medium is 40-70%, low is < 40%
+  const isHigh = predictionValue !== null && predictionValue > 70;
+  const isMedium = predictionValue !== null && predictionValue >= 40 && predictionValue <= 70;
+
   return (
     <div className="rounded-lg overflow-hidden border border-white/[0.07]" style={{ background: "rgba(8,13,30,0.72)" }}>
       <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/[0.05]">
-        <p className="text-[9px] text-white/25 uppercase tracking-[0.2em] font-mono font-semibold">FUNDING GAP · 6-MONTH TREND</p>
-        <span className={`text-[9px] font-mono ${critical ? "text-red-400" : "text-emerald-400"}`}>
-          {trend[trend.length - 1]?.underfunding ?? 0}%
+        <p className="text-[9px] text-white/25 uppercase tracking-[0.2em] font-mono font-semibold">UNDERFUNDING PREDICTION · DATABRICKS AI</p>
+        <span className={`text-[9px] font-mono ${
+          isHigh ? "text-red-400" : isMedium ? "text-amber-400" : "text-emerald-400"
+        }`}>
+          {formattedValue}
         </span>
       </div>
-      <div className="px-2 pt-2 pb-3">
-        <ResponsiveContainer width="100%" height={90}>
-          <LineChart data={trend} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
-            <XAxis dataKey="month" tick={{ fill: "rgba(255,255,255,0.22)", fontSize: 9, fontFamily: "monospace" }} axisLine={false} tickLine={false} />
-            <Tooltip
-              contentStyle={{ background: "rgba(8,10,20,0.9)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontSize: 11 }}
-              labelStyle={{ color: "rgba(255,255,255,0.5)" }}
-              itemStyle={{ color: critical ? "#f87171" : "#34d399" }}
-              formatter={(v: number) => [`${v}%`, "Underfunding"]}
-            />
-            <ReferenceLine y={70} stroke="rgba(248,113,113,0.25)" strokeDasharray="3 3" />
-            <Line type="monotone" dataKey="underfunding"
-              stroke={critical ? "#f87171" : "#34d399"} strokeWidth={2}
-              dot={{ fill: critical ? "#f87171" : "#34d399", r: 2.5, strokeWidth: 0 }}
-              activeDot={{ r: 4, strokeWidth: 0 }}
-              isAnimationActive animationDuration={800}
-            />
-          </LineChart>
-        </ResponsiveContainer>
+      <div className="px-4 py-6">
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-white/40 font-mono uppercase tracking-wider">Predicted Underfunding</span>
+            <span className={`text-lg font-mono font-bold ${
+              isHigh ? "text-red-400" : isMedium ? "text-amber-400" : "text-emerald-400"
+            }`}>
+              {formattedValue}
+            </span>
+          </div>
+          {predictionValue !== null && (
+            <div className="pt-2 border-t border-white/[0.05]">
+              <p className="text-[9px] text-white/30 font-mono leading-relaxed">
+                AI-powered prediction for Food Security underfunding percentage based on historical data and current crisis indicators. Higher percentages indicate greater funding gaps.
+              </p>
+            </div>
+          )}
+          {predictionValue === null && (
+            <div className="pt-2 border-t border-white/[0.05]">
+              <p className="text-[9px] text-white/30 font-mono leading-relaxed">
+                Unable to parse prediction data. Raw response: {JSON.stringify(predictionData).substring(0, 100)}...
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1124,17 +1312,26 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
   const [error,       setError]       = useState<string | null>(null);
   const [realWeather, setRealWeather] = useState<WeatherData | null>(null);
   const [activeTab,   setActiveTab]   = useState<TabId>("overview");
+  const [databricksData, setDatabricksData] = useState<any>(null);
 
   useEffect(() => {
     let cancelled = false;
     setData(null); setError(null); setLoading(true);
     setRealWeather(null); setActiveTab("overview");
+    setDatabricksData(null);
 
+    // Fetch dossier data
     fetchDossier(country, state)
       .then(d  => { if (!cancelled) setData(d); })
       .catch(e  => { if (!cancelled) setError(e.message ?? "Failed to load"); })
       .finally(() => { if (!cancelled) setLoading(false); });
 
+    // Fetch Databricks prediction
+    fetchDatabricksPrediction(country)
+      .then(result => { if (!cancelled) setDatabricksData(result); })
+      .catch(err => { console.warn('[FRONTEND] [Databricks] Failed to fetch prediction:', err); });
+
+    // Fetch weather data
     const locationQuery = state ? `${state}, ${country}` : country;
     fetchGoogleWeather(locationQuery)
       .then(w => {
@@ -1270,7 +1467,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
               {activeTab === "intel" && (
                 <>
                   <Reveal delay={0.0}>
-                    <TrendGraph trend={data.trend} />
+                    <DatabricksPrediction predictionData={databricksData} />
                   </Reveal>
                   <Reveal delay={0.1}>
                     <div className="flex items-center gap-2 pt-1 border-t border-white/[0.05]">
