@@ -10,7 +10,7 @@ const STAR_COUNT = 14_000;
 const STAR_NEAR = 700;
 const STAR_FAR = 3600;
 const STAR_PARALLAX = 0.1;
-const LAND_BASE = "109,135,90"; // realistic land tint
+const LAND_BASE = "55,110,55"; // realistic land tint
 
 // ─── Name mapping: crisis data → GeoJSON names ────────────────────────────
 const NAME_MAP: Record<string, string> = {
@@ -88,7 +88,7 @@ function getStrokeColor(feat: object, isHovered: boolean, isSelected: boolean, h
   if (isSelected)   return `rgba(${CYAN},0.95)`;
   if (hasSelection) return "rgba(255,255,255,0.12)";
   if (isHovered)    return `rgba(${CYAN},0.80)`;
-  return "rgba(255,255,255,0.06)";
+  return "rgba(8, 3, 3, 0.9)";
 }
 
 function getAltitude(isHovered: boolean, isSelected: boolean): number {
@@ -167,6 +167,7 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
         if ("specular" in phong) phong.specular.setRGB(0, 0, 0);
         if ("roughness" in standard) standard.roughness = 1;
         if ("metalness" in standard) standard.metalness = 0;
+        mat.depthTest = true;
         mat.needsUpdate = true;
       });
     });
@@ -180,24 +181,41 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
       if ((obj as THREE.Light).isLight) lights.push(obj as THREE.Light);
     });
     lights.forEach(light => scene.remove(light));
-    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-    const directional = new THREE.DirectionalLight(0xffffff, 0.5);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+    const directional = new THREE.DirectionalLight(0xffffff, 1.0);
     directional.position.set(120, 80, 100);
     scene.add(directional);
   }, []);
 
   const applyOceanTone = useCallback(() => {
     if (!globeRef.current) return;
-    const material = (globeRef.current as any).globeMaterial?.() as THREE.MeshPhongMaterial | undefined;
-    if (!material) return;
-    // Force a blue ocean base independent of texture darkness.
-    material.map = null;
-    material.color = new THREE.Color("#1f6fd1");
-    material.emissive = new THREE.Color("#0b2d6b");
-    material.emissiveIntensity = 0.10;
-    material.shininess = 0;
-    material.specular = new THREE.Color(0x000000);
-    material.needsUpdate = true;
+    const scene = globeRef.current.scene() as THREE.Scene;
+    
+    // Find and color the globe mesh directly
+    scene.traverse((obj: THREE.Object3D) => {
+      const mesh = obj as THREE.Mesh;
+      if (!mesh.geometry || !mesh.material) return;
+      
+      // Look for the main globe sphere (usually has a geometry with many vertices)
+      const geom = mesh.geometry as THREE.BufferGeometry;
+      if (geom.attributes?.position?.count > 1000) {
+        // This is the globe base
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        mats.forEach((mat: any) => {
+          mat.color = new THREE.Color("#010716");
+          mat.emissive = new THREE.Color("#010427");
+          mat.emissiveIntensity = 0.6;
+          mat.shininess = 0.5;
+          mat.specular = new THREE.Color(0x5ec8ff);
+          mat.needsUpdate = true;
+        });
+        // Ensure globe base renders first
+        mesh.renderOrder = 0;
+      } else if (geom.attributes?.position?.count > 0) {
+        // Polygons and other geometry render on top
+        mesh.renderOrder = 1;
+      }
+    });
   }, []);
 
   const createStarfield = useCallback(() => {
@@ -239,10 +257,17 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     ctrl.minDistance = 140;
     ctrl.maxDistance = 430;
     globeRef.current.pointOfView({ lat: 12, lng: 18, altitude: 2.2 }, 0);
+    
+    // Configure renderer for proper depth and render ordering
+    const renderer = (globeRef.current as any).renderer?.() as THREE.WebGLRenderer | undefined;
+    if (renderer) {
+      renderer.sortObjects = true;
+    }
+    
     setTimeout(() => {
-      applyOceanTone();
       configureTacticalLighting();
       applyMatteMaterials();
+      applyOceanTone();
       createStarfield();
     }, 0);
   }, [applyMatteMaterials, applyOceanTone, configureTacticalLighting, createStarfield]);
@@ -381,7 +406,7 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
         showGraticules={false}
         polygonsData={countries}
         polygonCapColor={capColor}
-        polygonSideColor={() => "rgba(0,0,0,0)"}
+        polygonSideColor={() => "#0b2d6b"}
         polygonStrokeColor={strokeColor}
         polygonAltitude={altitude}
         polygonsTransitionDuration={200}

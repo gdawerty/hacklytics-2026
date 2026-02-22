@@ -113,7 +113,7 @@ export default function StarfieldCanvas({ warp = false }: StarfieldCanvasProps) 
 
           const lg = ctx.createLinearGradient(sx, sy, ex, ey);
           lg.addColorStop(0, `hsla(${s.hue},${s.sat}%,${Math.min(99, s.lit + 10)}%,${Math.min(1, a + 0.2).toFixed(3)})`);
-          lg.addColorStop(1, "rgba(255,255,255,0)");
+          lg.addColorStop(1, "rgba(255, 255, 255, 0)");
           ctx.beginPath();
           ctx.moveTo(sx, sy);
           ctx.lineTo(ex, ey);
