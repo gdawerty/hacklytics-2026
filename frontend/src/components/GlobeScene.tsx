@@ -386,9 +386,13 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     [hoveredFeature, selectedFeature]
   );
 
-  // Country name tooltip (shown when not in selection mode)
-  const rawHoveredCountry     = hoveredFeature ? (hoveredFeature as any).properties?.name ?? "" : "";
-  const hoveredCountryDisplay = !hasSelection
+  // Country name tooltip:
+  // show in world view, and also while zoomed-in when hovering a different country.
+  const rawHoveredCountry = hoveredFeature ? (hoveredFeature as any).properties?.name ?? "" : "";
+  const isHoveringOtherCountry = Boolean(
+    hoveredFeature && (!hasSelection || hoveredFeature !== selectedFeature)
+  );
+  const hoveredCountryDisplay = isHoveringOtherCountry
     ? normalizeCountryName(REVERSE[rawHoveredCountry] ?? rawHoveredCountry)
     : "";
   const tooltipLabel = hoveredCountryDisplay;

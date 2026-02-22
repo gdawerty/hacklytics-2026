@@ -1,9 +1,10 @@
 import { Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import GlobeScene from "@/components/GlobeScene";
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [isZoomedIn, setIsZoomedIn] = useState(false);
   const [showAegisIntro, setShowAegisIntro] = useState(false);
 
@@ -57,6 +58,37 @@ export default function Dashboard() {
         )}
       </AnimatePresence>
 
+      {/* ── Back to Homepage — hidden when zoomed in (World view button takes over) ── */}
+      {!isZoomedIn && (
+        <button
+          onClick={() => navigate("/")}
+          className="absolute top-6 left-6 z-10 flex items-center gap-1.5 pointer-events-auto"
+          style={{
+            background: "rgba(0,0,0,0.45)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: 10,
+            padding: "7px 13px",
+            color: "rgba(255,255,255,0.5)",
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: 11,
+            letterSpacing: "0.08em",
+            cursor: "pointer",
+            backdropFilter: "blur(8px)",
+            transition: "color 0.15s, border-color 0.15s",
+          }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.9)";
+            (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,255,255,0.25)";
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLButtonElement).style.color = "rgba(255,255,255,0.5)";
+            (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(255,255,255,0.1)";
+          }}
+        >
+          ← HOME
+        </button>
+      )}
+
       {/* ── Header ── */}
       <div
         className="absolute top-8 left-0 right-0 pointer-events-none text-center transition-all duration-300"
@@ -70,21 +102,6 @@ export default function Dashboard() {
           style={{ color: "rgba(255,255,255,0.92)" }}>
           Aegis
         </h1>
-      </div>
-
-      <div className="absolute right-6 top-6 z-30 flex items-center gap-2">
-        <Link
-          to="/about"
-          className="rounded-md border border-white/15 bg-black/45 px-3 py-1.5 text-[11px] font-mono uppercase tracking-widest text-white/75 backdrop-blur-md transition-colors hover:border-cyan-300/55 hover:text-cyan-200"
-        >
-          About
-        </Link>
-        <Link
-          to="/contact"
-          className="rounded-md border border-white/15 bg-black/45 px-3 py-1.5 text-[11px] font-mono uppercase tracking-widest text-white/75 backdrop-blur-md transition-colors hover:border-cyan-300/55 hover:text-cyan-200"
-        >
-          Contact
-        </Link>
       </div>
 
     </div>

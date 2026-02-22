@@ -151,8 +151,6 @@ export default function Index() {
               style={{ fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace" }}
             >
               <span className="text-[#00F0FF]">System Status: {status}%</span>
-              <Link to="/about" className="text-white/70 transition-colors hover:text-white">About</Link>
-              <Link to="/contact" className="text-white/70 transition-colors hover:text-white">Contact</Link>
             </div>
           </div>
         </header>
@@ -179,11 +177,11 @@ export default function Index() {
             <div className="mt-8 flex flex-wrap gap-3">
               <ScrambleButton label="INITIALIZE MODEL" onClick={openModel} />
               <Link
-                to="/about"
+                to="/dashboard"
                 className="rounded-lg border border-white/10 bg-[#1A1A1A]/70 px-6 py-3 text-[12px] text-white/80 transition-colors hover:border-white/25 hover:text-white"
                 style={{ fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace" }}
               >
-                READ SPEC
+                OPEN MODEL
               </Link>
             </div>
           </motion.section>
@@ -246,4 +244,3 @@ export default function Index() {
     </div>
   );
 }
-
