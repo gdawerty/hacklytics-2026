@@ -388,6 +388,14 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     setMousePos({ x: e.clientX, y: e.clientY });
   }, []);
 
+  const globeShiftPx = hasSelection
+    ? -Math.round(
+        dims.w < 900
+          ? Math.min(220, Math.max(120, dims.w * 0.18))
+          : Math.min(430, Math.max(240, dims.w * 0.24))
+      )
+    : 0;
+
   return (
     <div
       ref={containerRef}
@@ -395,27 +403,35 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
       onMouseDown={handleInteraction}
       onMouseMove={handleMouseMove}
     >
-      <Globe
-        ref={globeRef}
-        width={dims.w}
-        height={dims.h}
-        backgroundColor="rgba(0,0,0,0)"
-        showAtmosphere
-        atmosphereColor="hsl(235,75%,22%)"
-        atmosphereAltitude={0.22}
-        showGraticules={false}
-        polygonsData={countries}
-        polygonCapColor={capColor}
-        polygonSideColor={() => "#0b2d6b"}
-        polygonStrokeColor={strokeColor}
-        polygonAltitude={altitude}
-        polygonsTransitionDuration={200}
-        polygonLabel={() => ""}
-        onPolygonHover={handlePolygonHover}
-        onPolygonClick={handlePolygonClick}
-        onGlobeClick={handleGlobeClick}
-        onGlobeReady={onGlobeReady}
-      />
+      <div
+        className="absolute inset-0 will-change-transform"
+        style={{
+          transform: `translateX(${globeShiftPx}px)`,
+          transition: "transform 560ms cubic-bezier(0.22, 1, 0.36, 1)",
+        }}
+      >
+        <Globe
+          ref={globeRef}
+          width={dims.w}
+          height={dims.h}
+          backgroundColor="rgba(0,0,0,0)"
+          showAtmosphere
+          atmosphereColor="hsl(235,75%,22%)"
+          atmosphereAltitude={0.22}
+          showGraticules={false}
+          polygonsData={countries}
+          polygonCapColor={capColor}
+          polygonSideColor={() => "#0b2d6b"}
+          polygonStrokeColor={strokeColor}
+          polygonAltitude={altitude}
+          polygonsTransitionDuration={200}
+          polygonLabel={() => ""}
+          onPolygonHover={handlePolygonHover}
+          onPolygonClick={handlePolygonClick}
+          onGlobeClick={handleGlobeClick}
+          onGlobeReady={onGlobeReady}
+        />
+      </div>
 
       {/* Back button */}
       {hasSelection && (
