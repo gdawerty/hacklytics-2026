@@ -32,7 +32,7 @@ export default function Index() {
       >
         <h1 className="text-3xl font-bold tracking-tight md:text-4xl"
           style={{ color: "rgba(255,255,255,0.92)" }}>
-          Humanitarian Crisis Predictor
+          Aegis - Humanitarian Dashboard
         </h1>
       </div>
 
