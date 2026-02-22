@@ -22,7 +22,7 @@ export default function Index() {
             transition={{ delay: 0.2, duration: 0.45, ease: "easeOut" }}
             className="text-5xl font-bold tracking-tight text-white md:text-6xl"
           >
-            Humanitarian Crisis Predictor
+            Aegis - Humanitarian Dashboard
           </motion.h1>
           <motion.p
             initial={{ opacity: 0, y: 12 }}
