@@ -1903,7 +1903,6 @@ function AidOrgRow({ org, index }: { org: AidOrg; index: number }) {
 function SocialCard({ post, index, country }: { post: SocialPost; index: number; country: string }) {
   const context = inferAidContext(post);
   const twitterSearch = `https://x.com/search?q=${encodeURIComponent(`${country} ${context}`)}&src=typed_query`;
-  const cover = post.coverImageUrl || `https://placehold.co/1200x675/020617/22d3ee?text=${encodeURIComponent(context)}`;
   const initial       = post.creator.replace("@", "")[0]?.toUpperCase() ?? "?";
 
   return (
@@ -1936,37 +1935,6 @@ function SocialCard({ post, index, country }: { post: SocialPost; index: number;
 
       {/* Caption */}
       <div className="px-4 py-3">
-        <a href={twitterSearch} target="_blank" rel="noopener noreferrer" className="relative block mb-2.5">
-          <img
-            src={cover}
-            alt={`${context} context`}
-            className="h-32 w-full rounded-md object-cover border border-white/10"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).src =
-                `https://placehold.co/1200x675/020617/94a3b8?text=${encodeURIComponent("Social Context")}`;
-            }}
-          />
-          <div
-            className="pointer-events-none absolute inset-0 flex items-center justify-center"
-            aria-hidden="true"
-          >
-            <div className="rounded-full border border-white/30 bg-black/55 px-3 py-2 backdrop-blur-sm">
-              <svg
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                className="text-white/90"
-              >
-                <path
-                  d="M5 4H9L13 10L18 4H20L14 11L21 20H16L11 13L6 20H4L10 12L5 4Z"
-                  fill="currentColor"
-                />
-              </svg>
-            </div>
-          </div>
-        </a>
         <p className="text-cyan-300/70 text-[9px] font-mono uppercase tracking-[0.14em] mb-2">{context}</p>
         <p className="text-white/72 text-[12px] leading-relaxed mb-2.5">{post.caption}</p>
 
