@@ -4,6 +4,10 @@ import StarfieldCanvas from "@/components/StarfieldCanvas";
 
 export default function Index() {
   const navigate = useNavigate();
+  const handleGetStarted = () => {
+    sessionStorage.setItem("showAegisIntro", "1");
+    navigate("/dashboard");
+  };
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-black">
@@ -22,7 +26,7 @@ export default function Index() {
             transition={{ delay: 0.2, duration: 0.45, ease: "easeOut" }}
             className="text-5xl font-bold tracking-tight text-white md:text-6xl"
           >
-            Aegis - Humanitarian Dashboard
+            Aegis
           </motion.h1>
           <motion.p
             initial={{ opacity: 0, y: 12 }}
@@ -36,7 +40,7 @@ export default function Index() {
             initial={{ opacity: 0, y: 14, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             transition={{ type: "spring", stiffness: 260, damping: 20, delay: 0.66 }}
-            onClick={() => navigate("/dashboard")}
+            onClick={handleGetStarted}
             className="mt-8 rounded-xl border border-cyan-400/40 bg-cyan-500/10 px-8 py-3 text-sm font-semibold text-cyan-200 transition-all hover:bg-cyan-500/20 hover:border-cyan-300/60"
           >
             Get Started

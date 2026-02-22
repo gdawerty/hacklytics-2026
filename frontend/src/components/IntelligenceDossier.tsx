@@ -44,6 +44,7 @@ interface SocialPost {
   views:    string;
   likes:    string;
   context?: string;
+  twitterUrl?: string;
   tiktokUrl?: string;
   coverImageUrl?: string;
 }
@@ -131,6 +132,17 @@ const AID_CONTEXTS = [
   "Operations & Support",
 ];
 
+const SAFE_POSITIVE_TERMS = [
+  "aid", "support", "relief", "awareness", "solidarity", "donate", "community",
+  "resilience", "protect", "health", "nutrition", "water", "shelter", "education",
+  "recovery", "assist", "volunteer", "humanitarian", "hope", "help",
+];
+
+const UNSAFE_TERMS = [
+  "kill", "exterminate", "hate", "slur", "nazi", "terrorist", "bomb them",
+  "racial", "racist", "fuck", "shit", "bitch", "bastard", "retard",
+];
+
 function buildPrompt(country: string, state?: string) {
   const location = state ? `${state} (${country})` : country;
   return `You are a humanitarian intelligence analyst. Return ONLY valid JSON — no markdown, no code blocks.
@@ -177,12 +189,12 @@ For ${location} as of February 2026, return this exact JSON:
   "social": [
     {
       "creator":  "@<realistic username>",
-      "caption":  "<authentic 20-30 word social post about this crisis>",
+      "caption":  "<authentic 20-35 word post about this crisis. no profanity/slurs/offensive language>",
       "hashtags": ["#tag1", "#tag2", "#tag3"],
       "views":    "<e.g. 2.4M>",
       "likes":    "<e.g. 180K>",
       "context":  <"${AID_CONTEXTS.join('"|"')}">,
-      "tiktokUrl": "<full https TikTok video URL>",
+      "twitterUrl": "<full https URL to an X/Twitter post or X search>",
       "coverImageUrl": "<optional https image URL for thumbnail>"
     }
   ],
@@ -196,14 +208,81 @@ For ${location} as of February 2026, return this exact JSON:
   ]
 }
 
+For social posts:
+- Use ONLY Twitter/X content references (x.com or twitter.com URLs). Do not return TikTok, Instagram, Facebook, Reddit, YouTube, or news URLs.
+- Include exactly 5 posts total, exactly one for each context bucket listed.
+- Safety filter: exclude anything racist, hateful, profane, violent, or offensive.
+- Tone must be constructive, awareness-oriented, and humanitarian-positive.
+
 Include exactly 3 articles, 5 social posts (one per context bucket), and 4 aid organizations. Be specific and factual.
 For URLs, avoid placeholders and return valid external links with https.`;
+}
+
+function isSafePositivePost(post: SocialPost): boolean {
+  const combined = `${post.caption} ${(post.hashtags ?? []).join(" ")}`.toLowerCase();
+  if (!combined.trim()) return false;
+  if (UNSAFE_TERMS.some((word) => combined.includes(word))) return false;
+  return SAFE_POSITIVE_TERMS.some((word) => combined.includes(word));
+}
+
+function isTwitterOnlyUrl(url?: string): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.includes("x.com") || host.includes("twitter.com");
+  } catch {
+    return false;
+  }
+}
+
+function socialFallbackForContext(country: string, context: string): SocialPost {
+  const query = encodeURIComponent(`${country} ${context} humanitarian awareness`);
+  return {
+    creator: "@humanitarian_updates",
+    caption: `${context} update for ${country}: coordinated humanitarian awareness and community support efforts are helping prioritize relief pathways and protect vulnerable households.`,
+    hashtags: ["#Humanitarian", "#Awareness", "#Relief"],
+    views: "—",
+    likes: "—",
+    context,
+    twitterUrl: `https://x.com/search?q=${query}&src=typed_query`,
+    coverImageUrl: `https://placehold.co/1200x675/020617/22d3ee?text=${encodeURIComponent(context)}`,
+  };
+}
+
+function sanitizeSocialPosts(country: string, posts: SocialPost[]): SocialPost[] {
+  const byContext = new Map<string, SocialPost>();
+  for (const raw of posts ?? []) {
+    const context = inferAidContext(raw);
+    if (!AID_CONTEXTS.includes(context)) continue;
+    const normalized: SocialPost = {
+      ...raw,
+      context,
+      creator: raw.creator || "@humanitarian_updates",
+      hashtags: Array.isArray(raw.hashtags) ? raw.hashtags.slice(0, 5) : ["#Humanitarian", "#Awareness"],
+      twitterUrl: raw.twitterUrl || raw.tiktokUrl,
+    };
+    if (!isSafePositivePost(normalized)) continue;
+    if (!isTwitterOnlyUrl(normalized.twitterUrl)) continue;
+    if (!byContext.has(context)) byContext.set(context, normalized);
+  }
+
+  for (const context of AID_CONTEXTS) {
+    if (!byContext.has(context)) byContext.set(context, socialFallbackForContext(country, context));
+  }
+  return AID_CONTEXTS.map((context) => byContext.get(context) as SocialPost);
 }
 
 async function fetchDossier(country: string, state?: string): Promise<DossierData> {
   const cacheKey = state ? `${country}::${state}` : country;
   const cached   = getCached(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    const sanitizedCached: DossierData = {
+      ...cached,
+      social: sanitizeSocialPosts(country, cached.social ?? []),
+    };
+    setCached(cacheKey, sanitizedCached);
+    return sanitizedCached;
+  }
 
   const res = await fetch(GROQ_URL, {
     method:  "POST",
@@ -238,13 +317,15 @@ async function fetchDossier(country: string, state?: string): Promise<DossierDat
           source: a.source,
           url: a.url,
           imageQuery: a.imageQuery,
-          imageUrl: `https://source.unsplash.com/800x450/?${encodeURIComponent(a.imageQuery)}`,
+          imageUrl: `https://picsum.photos/seed/${encodeURIComponent(a.title || a.imageQuery || a.source)}/800/450`,
         }));
       }
     }
   } catch {
     // keep Groq-provided articles as fallback
   }
+
+  data.social = sanitizeSocialPosts(country, data.social ?? []);
 
   setCached(cacheKey, data);
   return data;
@@ -474,19 +555,6 @@ async function fetchGoogleWeather(location: string): Promise<WeatherData | null>
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
-function barColor(v: number) {
-  if (v > 74) return "#f87171";
-  if (v > 49) return "#fb923c";
-  if (v > 24) return "#facc15";
-  return "#34d399";
-}
-function crisisLevel(i: number) {
-  if (i > 0.74) return { label: "Critical", cls: "bg-red-500/15 text-red-300 border-red-500/25" };
-  if (i > 0.49) return { label: "High",     cls: "bg-orange-500/15 text-orange-300 border-orange-500/25" };
-  if (i > 0.24) return { label: "Moderate", cls: "bg-yellow-500/15 text-yellow-300 border-yellow-500/25" };
-  return               { label: "Low",      cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/25" };
-}
-
 function hashSeed(input: string): number {
   let h = 0;
   for (let i = 0; i < input.length; i += 1) h = (h * 31 + input.charCodeAt(i)) >>> 0;
@@ -616,7 +684,6 @@ function WeatherIcon({ c }: { c: string }) {
 }
 
 // ─── OVERVIEW TAB ──────────────────────────────────────────────────────────
-const HAZARD_COLORS = ["", "#34d399", "#86efac", "#facc15", "#fb923c", "#f87171"];
 
 function WeatherTactical({ w, country, isLive }: { w: WeatherData; country: string; isLive: boolean }) {
   const [unit, setUnit] = useState<"C" | "F">(() =>
@@ -677,59 +744,107 @@ function WeatherTactical({ w, country, isLive }: { w: WeatherData; country: stri
   );
 }
 
-function OperationalPulse({ op }: { op: OperationalData }) {
-  const hc       = HAZARD_COLORS[Math.min(5, Math.max(1, op.hazardLevel))];
-  const facilPct = Math.min(100, Math.max(0, op.healthFacilities));
-  const facilColor = facilPct > 70 ? "#34d399" : facilPct > 40 ? "#fb923c" : "#f87171";
+interface PlaceCard {
+  title: string;
+  subtitle: string;
+  imageUrl?: string;
+  href: string;
+  query: string;
+}
+
+function buildCountryPlaces(country: string, state?: string): PlaceCard[] {
+  const region = state ? `${state}, ${country}` : country;
+  const seeds = [
+    { title: "Historic District", subtitle: `${region} heritage area`, query: `${region} historic district` },
+    { title: "City Center", subtitle: `${region} downtown`, query: `${region} city center skyline` },
+    { title: "Natural Landscape", subtitle: `${region} nature`, query: `${region} landscape nature` },
+    { title: "Local Community", subtitle: `${region} daily life`, query: `${region} street market community` },
+  ];
+  return seeds.map((s) => {
+    const q = encodeURIComponent(s.query);
+    return {
+      title: s.title,
+      subtitle: s.subtitle,
+      href: `https://www.google.com/search?q=${q}`,
+      query: s.query,
+    };
+  });
+}
+
+function CountryPlacesPanel({ country, state }: { country: string; state?: string }) {
+  const places = useMemo(() => buildCountryPlaces(country, state), [country, state]);
+  const [imagesByQuery, setImagesByQuery] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const pairs = await Promise.all(
+        places.map(async (place) => {
+          try {
+            const url =
+              `https://en.wikipedia.org/w/api.php?action=query&generator=search` +
+              `&gsrsearch=${encodeURIComponent(place.query)}` +
+              `&gsrlimit=1&prop=pageimages|info&inprop=url&pithumbsize=1200&format=json&origin=*`;
+            const res = await fetch(url);
+            if (!res.ok) return [place.query, ""] as const;
+            const data = await res.json();
+            const pages = data?.query?.pages ? Object.values(data.query.pages) as Array<any> : [];
+            const first = pages[0];
+            const thumb = first?.thumbnail?.source as string | undefined;
+            return [place.query, thumb ?? ""] as const;
+          } catch {
+            return [place.query, ""] as const;
+          }
+        })
+      );
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const [q, img] of pairs) {
+        if (img) next[q] = img;
+      }
+      setImagesByQuery(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [places]);
 
   return (
     <div className="rounded-lg overflow-hidden border border-white/[0.07]" style={{ background: "rgba(8,13,30,0.72)" }}>
       <div className="px-4 pt-3 pb-2 border-b border-white/[0.05]">
-        <p className="text-[9px] text-white/25 uppercase tracking-[0.2em] font-mono font-semibold">Operational Pulse</p>
+        <p className="text-[9px] text-white/25 uppercase tracking-[0.2em] font-mono font-semibold">
+          Places In {state ?? country}
+        </p>
       </div>
-      <div className="px-4 py-4 space-y-4">
-        <div>
-          <div className="flex items-center justify-between mb-1.5">
-            <span className="text-white/35 text-[10px] font-mono uppercase tracking-wider">HLTH FAC FUNCTIONAL</span>
-            <span className="font-bold text-[13px] font-mono tabular-nums" style={{ color: facilColor }}>{facilPct}%</span>
-          </div>
-          <div className="h-[3px] rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.07)" }}>
-            <motion.div
-              className="h-full rounded-full"
-              initial={{ width: 0 }}
-              animate={{ width: `${facilPct}%` }}
-              transition={{ duration: 0.8, ease: "easeOut", delay: 0.1 }}
-              style={{ background: facilColor, boxShadow: `0 0 6px ${facilColor}55` }}
+      <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {places.map((place) => (
+          <a
+            key={place.title}
+            href={place.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="group rounded-md border border-white/[0.08] overflow-hidden transition-colors hover:border-cyan-300/30"
+            style={{ background: "rgba(255,255,255,0.02)" }}
+          >
+            <img
+              src={imagesByQuery[place.query] || `https://picsum.photos/seed/${encodeURIComponent(place.query)}/900/550`}
+              alt={place.subtitle}
+              className="h-28 w-full object-cover"
+              loading="lazy"
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src =
+                  `https://placehold.co/900x550/020617/94a3b8?text=${encodeURIComponent(place.subtitle)}`;
+              }}
             />
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2.5">
-          <div className="rounded border border-white/[0.05] px-3 py-2.5" style={{ background: "rgba(255,255,255,0.02)" }}>
-            <p className="text-[9px] text-white/25 font-mono uppercase tracking-wider mb-1.5">DISPL ALERTS</p>
-            <p className="text-orange-300 font-bold text-[22px] font-mono tabular-nums leading-none">{op.displacementAlerts}</p>
-            <p className="text-white/18 text-[8px] font-mono mt-0.5">ACTIVE</p>
-          </div>
-          <div className="rounded border border-white/[0.05] px-3 py-2.5" style={{ background: "rgba(255,255,255,0.02)" }}>
-            <p className="text-[9px] text-white/25 font-mono uppercase tracking-wider mb-2">HAZARD LVL</p>
-            <div className="flex items-center gap-1">
-              {[1,2,3,4,5].map(i => (
-                <div key={i} className="flex-1 h-[3px] rounded-sm"
-                  style={{
-                    background: i <= op.hazardLevel ? hc : "rgba(255,255,255,0.07)",
-                    boxShadow:  i <= op.hazardLevel ? `0 0 4px ${hc}66` : "none",
-                  }}
-                />
-              ))}
+            <div className="px-2.5 py-2">
+              <p className="text-white/85 text-[11px] font-mono font-semibold">{place.title}</p>
+              <p className="text-white/35 text-[9px] mt-0.5">{place.subtitle}</p>
+              <p className="text-cyan-300/70 text-[9px] mt-1 font-mono uppercase tracking-wide group-hover:text-cyan-200">
+                More information ↗
+              </p>
             </div>
-            <p className="font-mono text-[11px] font-bold mt-1.5" style={{ color: hc }}>{op.hazardLevel}/5</p>
-          </div>
-        </div>
-        {op.alertText && (
-          <div className="flex items-start gap-2.5 pt-3 border-t border-white/[0.05]">
-            <span className="text-red-400 text-[8px] font-mono font-bold shrink-0 mt-0.5 tracking-widest">ALERT</span>
-            <p className="text-white/35 text-[11px] leading-relaxed font-mono">{op.alertText}</p>
-          </div>
-        )}
+          </a>
+        ))}
       </div>
     </div>
   );
@@ -890,7 +1005,8 @@ function DatabricksPrediction({ predictionData }: { predictionData: any }) {
 
 function IntelligenceCard({ article, index }: { article: Article; index: number }) {
   const safeUrl = ensureExternalUrl(article.url, `${article.source} ${article.title}`);
-  const imgUrl = article.imageUrl || `https://source.unsplash.com/800x450/?${encodeURIComponent(article.imageQuery || article.title)}`;
+  const fallbackSeed = encodeURIComponent(article.title || article.imageQuery || article.source || `article-${index}`);
+  const imgUrl = article.imageUrl || `https://picsum.photos/seed/${fallbackSeed}/800/450`;
   const open = () => { window.open(safeUrl, "_blank", "noopener,noreferrer"); };
   return (
     <motion.div
@@ -919,8 +1035,13 @@ function IntelligenceCard({ article, index }: { article: Article; index: number 
           alt={article.title}
           className="mb-2.5 h-28 w-full rounded-md object-cover border border-white/10"
           onError={(e) => {
-            (e.currentTarget as HTMLImageElement).src =
-              `https://placehold.co/800x450/020617/94a3b8?text=${encodeURIComponent(article.source)}`;
+            const el = e.currentTarget as HTMLImageElement;
+            const seeded = `https://picsum.photos/seed/${fallbackSeed}-fallback/800/450`;
+            if (!el.src.includes("picsum.photos")) {
+              el.src = seeded;
+              return;
+            }
+            el.src = `https://placehold.co/800x450/020617/94a3b8?text=${encodeURIComponent(article.source)}`;
           }}
         />
         <h3 className="text-white/90 font-semibold text-[12px] leading-snug tracking-tight mb-1.5 group-hover:text-white transition-colors">
@@ -1173,14 +1294,9 @@ function AidOrgRow({ org, index }: { org: AidOrg; index: number }) {
 }
 
 // ─── SOCIAL TAB ────────────────────────────────────────────────────────────
-function SocialCard({ post, index }: { post: SocialPost; index: number }) {
-  const primaryTag    = post.hashtags[0]?.replace("#", "") ?? "";
+function SocialCard({ post, index, country }: { post: SocialPost; index: number; country: string }) {
   const context = inferAidContext(post);
-  const tiktokSearch  = ensureExternalUrl(
-    post.tiktokUrl,
-    `${context} ${primaryTag} humanitarian tiktok`,
-    "https://www.tiktok.com/search?q="
-  );
+  const twitterSearch = `https://x.com/search?q=${encodeURIComponent(`${country} ${context}`)}&src=typed_query`;
   const cover = post.coverImageUrl || `https://placehold.co/1200x675/020617/22d3ee?text=${encodeURIComponent(context)}`;
   const initial       = post.creator.replace("@", "")[0]?.toUpperCase() ?? "?";
 
@@ -1202,29 +1318,26 @@ function SocialCard({ post, index }: { post: SocialPost; index: number }) {
           </div>
           <div>
             <p className="text-white/80 text-[11px] font-mono font-semibold leading-none">{post.creator}</p>
-            <p className="text-white/20 text-[8px] font-mono mt-0.5 uppercase tracking-wide">TikTok Creator</p>
+            <p className="text-white/20 text-[8px] font-mono mt-0.5 uppercase tracking-wide">Twitter/X Source</p>
           </div>
         </div>
-        {/* TikTok logo mark */}
+        {/* X mark */}
         <div className="flex items-center gap-1 px-2 py-1 rounded"
           style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)" }}>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-white/40">
-            <path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1V9.01a6.33 6.33 0 00-.79-.05 6.34 6.34 0 00-6.34 6.34 6.34 6.34 0 006.34 6.34 6.34 6.34 0 006.33-6.34V8.69a8.18 8.18 0 004.78 1.52V6.77a4.85 4.85 0 01-1.01-.08z"/>
-          </svg>
-          <span className="text-[8px] font-mono text-white/30">TikTok</span>
+          <span className="text-[8px] font-mono text-white/30">X</span>
         </div>
       </div>
 
       {/* Caption */}
       <div className="px-4 py-3">
-        <a href={tiktokSearch} target="_blank" rel="noopener noreferrer">
+        <a href={twitterSearch} target="_blank" rel="noopener noreferrer">
           <img
             src={cover}
             alt={`${context} context`}
             className="mb-2.5 h-32 w-full rounded-md object-cover border border-white/10"
             onError={(e) => {
               (e.currentTarget as HTMLImageElement).src =
-                `https://placehold.co/1200x675/020617/94a3b8?text=${encodeURIComponent("TikTok Context")}`;
+                `https://placehold.co/1200x675/020617/94a3b8?text=${encodeURIComponent("Social Context")}`;
             }}
           />
         </a>
@@ -1234,7 +1347,7 @@ function SocialCard({ post, index }: { post: SocialPost; index: number }) {
         {/* Hashtags */}
         <div className="flex flex-wrap gap-1.5 mb-3">
           {post.hashtags.map(h => (
-            <a key={h} href={`https://www.tiktok.com/search?q=${encodeURIComponent(h.replace("#",""))}`}
+            <a key={h} href={`https://x.com/search?q=${encodeURIComponent(`${country} ${context}`)}`}
               target="_blank" rel="noopener noreferrer"
               className="text-[10px] font-mono transition-opacity hover:opacity-100"
               style={{ color: "rgba(34,211,238,0.7)" }}>
@@ -1259,10 +1372,10 @@ function SocialCard({ post, index }: { post: SocialPost; index: number }) {
               <span className="text-white/40 text-[10px] font-mono">{post.likes}</span>
             </div>
           </div>
-          <a href={tiktokSearch} target="_blank" rel="noopener noreferrer"
+          <a href={twitterSearch} target="_blank" rel="noopener noreferrer"
             className="text-[9px] font-mono px-2.5 py-1 rounded transition-all hover:opacity-90"
             style={{ background: "rgba(34,211,238,0.08)", color: "rgba(34,211,238,0.7)", border: "1px solid rgba(34,211,238,0.15)" }}>
-            ↗ watch
+            ↗ open
           </a>
         </div>
       </div>
@@ -1350,8 +1463,6 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
   }, [country, state]);
 
   const weatherToShow = realWeather ?? data?.weather ?? null;
-  const score  = crisis ? Math.round(crisis.intensity * 100) : null;
-  const level  = crisis ? crisisLevel(crisis.intensity) : null;
 
   return (
     <motion.div
@@ -1360,7 +1471,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
       animate={{ x: 0,      filter: "blur(0px)",  opacity: 1 }}
       exit={{   x: "100%", filter: "blur(12px)", opacity: 0 }}
       transition={{ type: "spring", stiffness: 380, damping: 30 }}
-      className="fixed top-0 right-0 h-screen w-[380px] z-50 flex flex-col border-l border-white/[0.07] overflow-hidden"
+      className="fixed top-0 right-0 h-screen w-[94vw] sm:w-[460px] lg:w-[540px] z-50 flex flex-col border-l border-white/[0.07] overflow-hidden"
       style={{
         background:           "rgba(2,6,20,0.92)",
         backdropFilter:       "blur(24px) saturate(180%)",
@@ -1372,9 +1483,8 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
         <div className="flex items-start justify-between mb-3">
           <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded"
             style={{ background: "rgba(34,211,238,0.07)", border: "1px solid rgba(34,211,238,0.18)" }}>
-            <div className="w-1 h-1 rounded-full" style={{ background: "rgba(34,211,238,0.7)" }} />
             <span className="text-[8px] font-mono uppercase tracking-widest" style={{ color: "rgba(34,211,238,0.60)" }}>
-              HUMANITARIAN DASHBOARD
+              AEGIS
             </span>
           </div>
           <button onClick={onClose}
@@ -1390,36 +1500,11 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
           <h2 className="text-white font-bold text-[22px] leading-tight tracking-tight font-mono">
             {state ?? country}
           </h2>
-          {state && <p className="text-white/35 text-[11px] font-mono mt-0.5 uppercase tracking-wider">{country}</p>}
+          <p className="text-white/35 text-[11px] font-mono mt-0.5 uppercase tracking-wider">
+            Country · {country}
+          </p>
         </div>
 
-        {crisis && score !== null && level && (
-          <>
-            <div className="flex items-center gap-3 mt-4">
-              <span className="text-3xl font-bold tabular-nums text-white">{score}%</span>
-              <span className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${level.cls}`}>{level.label}</span>
-              <span className="text-white/22 text-[9px] ml-auto">Crisis Likelihood</span>
-            </div>
-            <div className="mt-3.5 space-y-1.5">
-              {crisis.factors.map(f => (
-                <div key={f.name}>
-                  <div className="flex items-center justify-between mb-0.5">
-                    <span className="text-white/40 text-[11px]">{f.icon} {f.name}</span>
-                    <span className="text-white/25 text-[10px] font-mono">{f.value}%</span>
-                  </div>
-                  <div className="h-[2px] rounded-full bg-white/6">
-                    <motion.div className="h-full rounded-full"
-                      initial={{ width: 0 }}
-                      animate={{ width: `${f.value}%` }}
-                      transition={{ duration: 0.7, ease: "easeOut", delay: 0.1 }}
-                      style={{ background: barColor(f.value), boxShadow: `0 0 4px ${barColor(f.value)}55` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
       </div>
 
       {/* ── Tab bar ── */}
@@ -1458,7 +1543,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
                     />
                   </Reveal>
                   <Reveal delay={0.1}>
-                    <OperationalPulse op={data.operational} />
+                    <CountryPlacesPanel country={country} state={state} />
                   </Reveal>
                 </>
               )}
@@ -1472,7 +1557,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
                   <Reveal delay={0.1}>
                     <div className="flex items-center gap-2 pt-1 border-t border-white/[0.05]">
                       <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "rgba(34,211,238,0.7)" }} />
-                      <p className="text-[9px] text-white/22 uppercase tracking-[0.2em] font-mono font-semibold">HUMANITARIAN DASHBOARD</p>
+                      <p className="text-[9px] text-white/22 uppercase tracking-[0.2em] font-mono font-semibold">AEGIS</p>
                     </div>
                   </Reveal>
                   {data.articles.map((a, i) => (
@@ -1512,7 +1597,7 @@ export function IntelligenceDossier({ country, crisis, state, onClose }: Dossier
                   <SocialAwarenessNote country={country} />
                   {(data.social ?? []).length > 0 ? (
                     (data.social ?? []).map((post, i) => (
-                      <SocialCard key={i} post={post} index={i} />
+                      <SocialCard key={i} post={post} index={i} country={country} />
                     ))
                   ) : (
                     <p className="text-white/20 text-[11px] font-mono">No social data available.</p>

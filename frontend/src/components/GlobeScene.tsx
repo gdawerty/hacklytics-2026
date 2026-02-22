@@ -7,8 +7,8 @@ import { IntelligenceDossier } from "./IntelligenceDossier";
 
 const IDLE_MS = 40_000;
 const STAR_COUNT = 14_000;
-const STAR_NEAR = 700;
-const STAR_FAR = 3600;
+const STAR_NEAR = 260;
+const STAR_FAR = 2200;
 const STAR_PARALLAX = 0.1;
 const LAND_BASE = "55,110,55"; // realistic land tint
 
@@ -75,8 +75,7 @@ function getCapColor(feat: object, isHovered: boolean, isSelected: boolean, hasS
 
   if (hasSelection) {
     if (isSelected) return `rgba(${LAND_BASE},0.80)`;
-    if (isHovered) return `rgba(${LAND_BASE},0.28)`;
-    return `rgba(${LAND_BASE},0.10)`;
+    return "rgba(0,0,0,0)";
   }
 
   if (isHovered) return `rgba(${LAND_BASE},0.62)`;
@@ -88,7 +87,7 @@ function getStrokeColor(feat: object, isHovered: boolean, isSelected: boolean, h
   if (isSelected)   return `rgba(${CYAN},0.95)`;
   if (hasSelection) return "rgba(255,255,255,0.12)";
   if (isHovered)    return `rgba(${CYAN},0.80)`;
-  return "rgba(8, 3, 3, 0.9)";
+  return "rgba(57, 107, 153, 0.06)";
 }
 
 function getAltitude(isHovered: boolean, isSelected: boolean): number {
@@ -111,12 +110,12 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
   const [countries,       setCountries]       = useState<object[]>([]);
   const [hoveredFeature,  setHoveredFeature]  = useState<object | null>(null);
   const [selectedFeature, setSelectedFeature] = useState<object | null>(null);
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
 
   const [dossier, setDossier] = useState<{
     country: string;
     crisis:  CrisisPoint | null;
   } | null>(null);
-
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   const [dims, setDims] = useState({ w: 900, h: 700 });
 
@@ -189,33 +188,19 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
 
   const applyOceanTone = useCallback(() => {
     if (!globeRef.current) return;
-    const scene = globeRef.current.scene() as THREE.Scene;
-    
-    // Find and color the globe mesh directly
-    scene.traverse((obj: THREE.Object3D) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.geometry || !mesh.material) return;
-      
-      // Look for the main globe sphere (usually has a geometry with many vertices)
-      const geom = mesh.geometry as THREE.BufferGeometry;
-      if (geom.attributes?.position?.count > 1000) {
-        // This is the globe base
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        mats.forEach((mat: any) => {
-          mat.color = new THREE.Color("#010716");
-          mat.emissive = new THREE.Color("#010427");
-          mat.emissiveIntensity = 0.6;
-          mat.shininess = 0.5;
-          mat.specular = new THREE.Color(0x5ec8ff);
-          mat.needsUpdate = true;
-        });
-        // Ensure globe base renders first
-        mesh.renderOrder = 0;
-      } else if (geom.attributes?.position?.count > 0) {
-        // Polygons and other geometry render on top
-        mesh.renderOrder = 1;
-      }
-    });
+    const material = (globeRef.current as any).globeMaterial?.() as THREE.MeshPhongMaterial | undefined;
+    if (!material) return;
+    material.map = null;
+    material.specularMap = null;
+    material.bumpMap = null;
+    material.normalMap = null;
+    material.emissiveMap = null;
+    material.color = new THREE.Color("#1d5fa8");
+    material.emissive = new THREE.Color("#1b4f93");
+    material.emissiveIntensity = 0.35;
+    material.shininess = 0;
+    material.specular = new THREE.Color("#163c6d");
+    material.needsUpdate = true;
   }, []);
 
   const createStarfield = useCallback(() => {
@@ -239,6 +224,7 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
       transparent: true,
       opacity: 0.72,
       depthWrite: false,
+      depthTest: true,
     });
     const points = new THREE.Points(geometry, material);
     points.frustumCulled = false;
@@ -251,6 +237,10 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
   const onGlobeReady = useCallback(() => {
     if (!globeRef.current || sceneInitRef.current) return;
     sceneInitRef.current = true;
+    const cam = globeRef.current.camera() as THREE.PerspectiveCamera;
+    cam.near = 0.1;
+    cam.far = 10000;
+    cam.updateProjectionMatrix();
     const ctrl = globeRef.current.controls() as any;
     ctrl.autoRotate      = true;
     ctrl.autoRotateSpeed = 0.4;
@@ -277,9 +267,11 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     if (globeRef.current) (globeRef.current.controls() as any).autoRotate = false;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      if (globeRef.current) (globeRef.current.controls() as any).autoRotate = true;
+      if (!selectedFeature && globeRef.current) {
+        (globeRef.current.controls() as any).autoRotate = true;
+      }
     }, IDLE_MS);
-  }, []);
+  }, [selectedFeature]);
 
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
 
@@ -306,12 +298,24 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!globeRef.current) return;
+    applyOceanTone();
+    const t1 = window.setTimeout(() => applyOceanTone(), 90);
+    const t2 = window.setTimeout(() => applyOceanTone(), 260);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, [applyOceanTone, selectedFeature, isDashboardOpen, dims.w, dims.h]);
+
   // Back → world view
   const handleBack = useCallback(() => {
+    setIsDashboardOpen(false);
     setSelectedFeature(null);
     setDossier(null);
     onSelectionChange?.(false);
-    globeRef.current?.pointOfView({ altitude: 2.5 }, 1200);
+    globeRef.current?.pointOfView({ lat: 12, lng: 18, altitude: 2.5 }, 1000);
     handleInteraction();
   }, [handleInteraction, onSelectionChange]);
 
@@ -331,9 +335,10 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     const lat  = (bbox.minLat + bbox.maxLat) / 2;
     const lng  = (bbox.minLng + bbox.maxLng) / 2;
     const alt  = bboxAltitude(bbox);
-    globeRef.current?.pointOfView({ lat, lng, altitude: alt }, 1200);
+    globeRef.current?.pointOfView({ lat, lng, altitude: alt }, 850);
 
     setSelectedFeature(feat);
+    setIsDashboardOpen(true);
     onSelectionChange?.(true);
 
     const rawName     = (feat as any).properties?.name ?? "";
@@ -388,6 +393,20 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     setMousePos({ x: e.clientX, y: e.clientY });
   }, []);
 
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const allowNativeContextMenu = (event: MouseEvent) => {
+      event.stopPropagation();
+    };
+    el.addEventListener("contextmenu", allowNativeContextMenu, true);
+    return () => el.removeEventListener("contextmenu", allowNativeContextMenu, true);
+  }, []);
+
+  const globeShiftPx = isDashboardOpen
+    ? -Math.round(Math.min(260, Math.max(140, dims.w * 0.14)))
+    : 0;
+
   return (
     <div
       ref={containerRef}
@@ -395,27 +414,35 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
       onMouseDown={handleInteraction}
       onMouseMove={handleMouseMove}
     >
-      <Globe
-        ref={globeRef}
-        width={dims.w}
-        height={dims.h}
-        backgroundColor="rgba(0,0,0,0)"
-        showAtmosphere
-        atmosphereColor="hsl(235,75%,22%)"
-        atmosphereAltitude={0.22}
-        showGraticules={false}
-        polygonsData={countries}
-        polygonCapColor={capColor}
-        polygonSideColor={() => "#0b2d6b"}
-        polygonStrokeColor={strokeColor}
-        polygonAltitude={altitude}
-        polygonsTransitionDuration={200}
-        polygonLabel={() => ""}
-        onPolygonHover={handlePolygonHover}
-        onPolygonClick={handlePolygonClick}
-        onGlobeClick={handleGlobeClick}
-        onGlobeReady={onGlobeReady}
-      />
+      <div
+        className="absolute inset-0 will-change-transform"
+        style={{
+          transform: `translateX(${globeShiftPx}px)`,
+          transition: "transform 560ms cubic-bezier(0.22, 1, 0.36, 1)",
+        }}
+      >
+        <Globe
+          ref={globeRef}
+          width={dims.w}
+          height={dims.h}
+          backgroundColor="rgba(0,0,0,0)"
+          showAtmosphere
+          atmosphereColor="#2f86de"
+          atmosphereAltitude={0.22}
+          showGraticules={false}
+          polygonsData={countries}
+          polygonCapColor={capColor}
+          polygonSideColor={() => "#0b2d6b"}
+          polygonStrokeColor={strokeColor}
+          polygonAltitude={altitude}
+          polygonsTransitionDuration={200}
+          polygonLabel={() => ""}
+          onPolygonHover={handlePolygonHover}
+          onPolygonClick={handlePolygonClick}
+          onGlobeClick={handleGlobeClick}
+          onGlobeReady={onGlobeReady}
+        />
+      </div>
 
       {/* Back button */}
       {hasSelection && (
