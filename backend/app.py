@@ -1107,29 +1107,37 @@ def previous_year_funding():
                 # Connect using databricks-sql-connector
                 print(f"[BACKEND] Querying Databricks SQL for {country} (year {previous_year})")
                 with sql.connect(
-                    host=databricks_host,
+                    server_hostname=databricks_host,
                     http_path=f"/sql/1.0/warehouses/{databricks_warehouse_id}",
-                    auth_type="pat",
-                    token=databricks_token
+                    access_token=databricks_token
                 ) as conn:
                     cursor = conn.cursor()
                     
                     # Query the table directly for all categories at once
+                    # Use case-insensitive, trimmed matching and aggregate total_sum by category
+                    safe_country = country.replace("'", "''")
                     sql_query = f"""
-                    SELECT category, total_sum 
+                    SELECT category, SUM(total_sum) AS total_sum
                     FROM workspace.master_data.model_ml_updated2
-                    WHERE country = '{country}' AND year = {previous_year}
+                    WHERE UPPER(TRIM(country)) = UPPER(TRIM('{safe_country}'))
+                      AND year = {previous_year}
+                    GROUP BY category
                     """
-                    
+
                     print(f"[BACKEND] Executing SQL query: {sql_query}")
                     cursor.execute(sql_query)
                     rows = cursor.fetchall()
-                    
+
                     print(f"[BACKEND] Query returned {len(rows)} rows")
                     for row in rows:
-                        cat, total = row[0], row[1]
-                        funding_by_category[cat] = float(total)
-                        print(f"[BACKEND] {cat}: ${float(total):,.0f}")
+                        # cursor may return tuples; handle (category, total_sum)
+                        cat = row[0]
+                        total = row[1] if len(row) > 1 else 0
+                        try:
+                            funding_by_category[cat] = float(total)
+                            print(f"[BACKEND] {cat}: ${float(total):,.0f}")
+                        except Exception:
+                            funding_by_category[cat] = 0.0
                     
                     cursor.close()
             except Exception as e:
