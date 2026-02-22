@@ -180,8 +180,8 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
       if ((obj as THREE.Light).isLight) lights.push(obj as THREE.Light);
     });
     lights.forEach(light => scene.remove(light));
-    scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-    const directional = new THREE.DirectionalLight(0xffffff, 0.5);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.08));
+    const directional = new THREE.DirectionalLight(0xffffff, 0.16);
     directional.position.set(120, 80, 100);
     scene.add(directional);
   }, []);
@@ -190,11 +190,15 @@ export default function GlobeScene({ onSelectionChange }: GlobeSceneProps) {
     if (!globeRef.current) return;
     const material = (globeRef.current as any).globeMaterial?.() as THREE.MeshPhongMaterial | undefined;
     if (!material) return;
-    // Force a blue ocean base independent of texture darkness.
+    // Force a matte ocean: remove all lighting/texture maps that can create glare.
     material.map = null;
-    material.color = new THREE.Color("#1f6fd1");
-    material.emissive = new THREE.Color("#0b2d6b");
-    material.emissiveIntensity = 0.10;
+    material.specularMap = null;
+    material.bumpMap = null;
+    material.normalMap = null;
+    material.emissiveMap = null;
+    material.color = new THREE.Color("#4ea3ff");
+    material.emissive = new THREE.Color("#2f86de");
+    material.emissiveIntensity = 0.42;
     material.shininess = 0;
     material.specular = new THREE.Color(0x000000);
     material.needsUpdate = true;
